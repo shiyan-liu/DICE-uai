@@ -10,7 +10,12 @@ C. 全对全两两配对（完整循环赛）
 import argparse
 import logging
 import sys
+import os
 from pathlib import Path
+
+# 添加项目路径到Python路径
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+
 from src.evaluation.dice_engine import SimplifiedDICEEvaluator, SimplifiedDICEConfig
 
 
@@ -334,4 +339,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()

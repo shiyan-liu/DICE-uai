@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 
 # 添加项目根目录到Python路径
-sys.path.append(str(Path(__file__).parent))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from src.evaluation.ragas_wrapper import RagasDiceEvaluator, RagasDiceConfig
 

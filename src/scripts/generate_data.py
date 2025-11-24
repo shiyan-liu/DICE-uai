@@ -10,8 +10,7 @@ import argparse
 from pathlib import Path
 
 # 添加项目路径到Python路径
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 def check_dependencies():
     """检查必要的依赖是否安装"""
@@ -172,4 +171,4 @@ def main():
 
 if __name__ == "__main__":
     exit_code = main()
-    sys.exit(exit_code) 
+    sys.exit(exit_code)

@@ -6,10 +6,14 @@ DICE准确率评估脚本
 
 import argparse
 import logging
-from pathlib import Path
+import sys
 import os
-from datetime import datetime
 import json
+from pathlib import Path
+from datetime import datetime
+
+# 添加项目根目录到Python路径
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from src.evaluation.dice_engine import SimplifiedDICEConfig
 from src.utils.ragas_impl import RagasConfig

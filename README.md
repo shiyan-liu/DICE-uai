@@ -9,7 +9,7 @@ This repository implements **DICE** (Discrete Interpretable Comparative Evaluati
 ## Features
 
 - Evidence-coupled reasoning for transparent decision-making  
-- Probabilistic $\\{A, B, Tie\\}$ scoring for confidence-aware judgments  
+- Probabilistic $\{A, B, Tie\}$ scoring for confidence-aware judgments  
 - Efficient large-scale evaluation with Swiss-system tournament  
 - Reproducible benchmarks for multi-system comparisons  
 
@@ -24,7 +24,32 @@ This repository implements **DICE** (Discrete Interpretable Comparative Evaluati
    ```bash
    pip install -r requirements.txt
    ```
-3. [TBD: evaluation command for your system]
+3. **Run evaluation**:
+
+   **Generate QACG data** (Question, Answer, Context, Groundtruth):
+   ```bash
+   python src/scripts/generate_data.py --num_questions 20
+   ```
+
+   **Run DICE Evaluation** (Tournament Mode):
+   ```bash
+   python src/scripts/run_dice.py --scenario tournament
+   ```
+
+   **Run DICE Evaluation** (Baseline Comparison):
+   ```bash
+   python src/scripts/run_dice.py --scenario baseline --target_system bge-large-zh_chunk_256_qwen2.5
+   ```
+
+   **Run RAGAS Evaluation**:
+   ```bash
+   python src/scripts/run_ragas.py --input_dir qacg_output --output_dir ragas_dice_output
+   ```
+
+   **Validate Evaluation Accuracy** (requires human annotation):
+   ```bash
+   python src/scripts/validate_dice.py --qacg_files qacg_output/qacg_system_A.json qacg_output/qacg_system_B.json
+   ```
 
 ## Reference
 
