@@ -1,6 +1,8 @@
 # DICE
 
-![DICE Framework](docs/dice_framework.png)
+![DICE Poster](docs/dice_poster.png)
+
+<!-- ![DICE Framework](docs/dice_framework.png) -->
 
 Code for evaluating RAG systems with interpretable reasoning and probabilistic scoring.
 
