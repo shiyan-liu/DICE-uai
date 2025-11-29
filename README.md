@@ -11,7 +11,7 @@ This repository implements **DICE** (Discrete Interpretable Comparative Evaluati
 ## Features
 
 - Evidence-coupled reasoning for transparent decision-making
-- Probabilistic $\{A, B, Tie\}$ scoring for confidence-aware judgments
+- Probabilistic {A, B, Tie} scoring for confidence-aware judgments
 - Efficient large-scale evaluation with Swiss-system tournament
 - Reproducible benchmarks for multi-system comparisons
 
