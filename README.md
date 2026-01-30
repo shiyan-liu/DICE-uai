@@ -97,8 +97,8 @@ If you use DICE in your work, please cite:
 
 ```bibtex
 @inproceedings{liu2025dice,
-  title={DICE: Discrete Interpretable Comparison Evaluation with Probabilistic Scoring for Retrieval-Augmented Generation},
-  author={Liu, Shiyan and Ma, Jian},
+  title={DICE: Discrete Interpretable Comparative Evaluation with Probabilistic Scoring for Retrieval-Augmented Generation},
+  author={Liu, Shiyan and Ma, Jian and Qu, Rui},
   booktitle={Socially Responsible and Trustworthy Foundation Models at NeurIPS 2025}
 }
 ```
