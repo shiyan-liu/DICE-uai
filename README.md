@@ -25,7 +25,32 @@ This repository implements **DICE** (Discrete Interpretable Comparative Evaluati
    pip install -r requirements.txt
    ```
 
+3. (Optional) Deploy Ollama for Local LLM:
+
+   This project uses **Qwen2.5** models for evaluation. To run with local LLM instead of API calls:
+
+   - **Install Ollama**: Download and install from [ollama.ai](https://ollama.ai)
+
+   - **Pull the required model**:
+     ```bash
+     ollama pull qwen2.5:7b  # Main evaluation model (7B version)
+     ollama pull qwen2.5-mini  # Optional: smaller variant for testing
+     ```
+
+   - **Start Ollama service** (in a separate terminal):
+     ```bash
+     ollama serve
+     ```
+     Service will be available at `http://localhost:11434`
+
+   - **Verify model installation**:
+     ```bash
+     ollama list  # Should show qwen2.5:7b and optionally qwen2.5-mini
+     ```
+
 ## Usage
+
+**Note**: If using Ollama, ensure `ollama serve` is running in a separate terminal before executing any evaluation scripts.
 
 ### 1. Prepare Your Data
 
@@ -72,6 +97,8 @@ For a comprehensive comparison of all systems against each other (N*N), use the 
 ```bash
 python src/scripts/run_dice.py --scenario allpairs --input_dir my_systems/
 ```
+
+**To reproduce the original experiment with Qwen2.5 locally**, ensure Ollama is serving and the models are loaded. The framework will automatically use the local Ollama service when configured.
 
 ### 3. Generate Synthetic Data (Optional)
 
