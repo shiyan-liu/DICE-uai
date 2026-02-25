@@ -1149,78 +1149,78 @@ class SimplifiedDICEEvaluator:
             }
     
     def _create_tournament_baseline_data(self, target_data: List[Dict], baseline_info: Dict) -> Tuple[List[Dict], int]:
-        """基于锦标赛排名创建基线数据"""
+        """Create baseline data based on tournament ranking."""
         baseline_name = baseline_info['system_name']
         elo_score = baseline_info['elo_score']
         rank = baseline_info['rank']
-        
-        # 根据排名调整生成质量
+
+        # Adjust generation quality based on rank
         if rank == 1:
             quality_level = "high"
-            instruction = f"作为锦标赛第1名的系统({baseline_name}, Elo: {elo_score:.1f})，请生成高质量回答。要求：1)提供完整准确的信息，2)逻辑清晰条理分明，3)基于权威资料，4)表述专业准确。"
+            instruction = f"As system ranked 1st in tournament ({baseline_name}, Elo: {elo_score:.1f}), generate high-quality answer. Requirements: 1)Provide complete accurate information, 2)Clear logical structure, 3)Based on authoritative materials, 4)Professional expression."
         elif rank == 5:
             quality_level = "medium"
-            instruction = f"作为锦标赛第5名的系统({baseline_name}, Elo: {elo_score:.1f})，请生成中等质量回答。要求：1)包含主要信息但可能缺少细节，2)表述基本准确但不够深入，3)信息完整性中等。"
+            instruction = f"As system ranked 5th in tournament ({baseline_name}, Elo: {elo_score:.1f}), generate medium-quality answer. Requirements: 1)Main information with possible details missing, 2)Basically accurate but not deep enough, 3)Medium information completeness."
         else:  # rank == 8
             quality_level = "low"
-            instruction = f"作为锦标赛第8名的系统({baseline_name}, Elo: {elo_score:.1f})，请生成较低质量回答。要求：1)信息不够准确或有遗漏，2)表述可能含糊不清，3)可能包含错误或无关信息。"
-        
-        # 生成基线数据
+            instruction = f"As system ranked 8th in tournament ({baseline_name}, Elo: {elo_score:.1f}), generate lower-quality answer. Requirements: 1)Information may be inaccurate or incomplete, 2)Expression may be unclear, 3)Possible errors or irrelevant information."
+
+        # Generate baseline data
         baseline_data = []
         generation_calls = 0
-        
+
         for item in target_data:
             question = item['question']
             groundtruth = item['groundtruth']
-            
-            # 生成基线回答
+
+            # Generate baseline answer
             baseline_answer = self._generate_baseline_answer(question, groundtruth, instruction, quality_level)
             generation_calls += 1
-            
-            # 生成基线上下文
+
+            # Generate baseline contexts
             baseline_contexts = self._generate_baseline_contexts(question, groundtruth, quality_level)
-            generation_calls += 3  # 3个上下文
-            
+            generation_calls += 3  # 3 contexts
+
             baseline_data.append({
                 'question': question,
                 'groundtruth': groundtruth,
                 'answer': baseline_answer,
                 'context': baseline_contexts
             })
-        
+
         return baseline_data, generation_calls
     
     def _summarize_tournament_baseline_comparison(self, baseline_results: Dict, target_system: str) -> Dict:
-        """总结锦标赛基线对比结果"""
+        """Summarize tournament baseline comparison results."""
         summary = {
             "target_system": target_system,
             "comparisons": {}
         }
-        
+
         for rank_name, result in baseline_results.items():
             baseline_info = result["baseline_info"]
-            comparison = result["comparison"]
-            
-            # 计算胜率
+            comparison = result
+
+            # Calculate win rate
             total_questions = len(comparison["question_results"])
-            wins = sum(1 for qr in comparison["question_results"] 
+            wins = sum(1 for qr in comparison["question_results"]
                       if qr["passage_judgment"]["win_type"] == "A wins")
-            ties = sum(1 for qr in comparison["question_results"] 
+            ties = sum(1 for qr in comparison["question_results"]
                       if qr["passage_judgment"]["win_type"] == "Tie")
-            
+
             win_rate = wins / total_questions if total_questions > 0 else 0
             tie_rate = ties / total_questions if total_questions > 0 else 0
-            
-            # 判断结论
+
+            # Determine conclusion
             if win_rate > 0.6:
-                conclusion = f"显著优于{rank_name}"
+                conclusion = f"significantly better than {rank_name}"
             elif win_rate > 0.4:
-                conclusion = f"略优于{rank_name}"
+                conclusion = f"slightly better than {rank_name}"
             elif win_rate > 0.2:
-                conclusion = f"与{rank_name}相当"
+                conclusion = f"comparable to {rank_name}"
             else:
-                conclusion = f"不如{rank_name}"
-            
+                conclusion = f"inferior to {rank_name}"
+
             summary["comparisons"][rank_name] = {
                 "baseline_system": baseline_info["system_name"],
                 "baseline_elo": baseline_info["elo_score"],
@@ -1230,64 +1230,64 @@ class SimplifiedDICEEvaluator:
                 "total_questions": total_questions,
                 "conclusion": conclusion
             }
-        
+
         return summary
     
-    def scenario_b_baseline_comparison(self, qacg_file: str, target_system: str = None, 
+    def scenario_b_baseline_comparison(self, qacg_file: str, target_system: str = None,
                                      tournament_report_path: str = None) -> Dict[str, Any]:
         """
-        场景B: 单系统vs锦标赛排名基线
-        
+        Scenario B: Single system vs tournament ranking baselines.
+
         Args:
-            qacg_file: 目标系统的QACG文件
-            target_system: 系统名称（可选）
-            tournament_report_path: 锦标赛报告文件路径（可选）
-            
+            qacg_file: Target system's QACG file
+            target_system: System name (optional)
+            tournament_report_path: Tournament report file path (optional)
+
         Returns:
-            基线对比结果
+            Baseline comparison result
         """
-        self.logger.info("🎯 开始场景B: 单系统vs锦标赛排名基线")
-        
-        # 1. 加载目标系统
+        self.logger.info("Starting Scenario B: Single system vs tournament ranking baselines")
+
+        # 1. Load target system
         target_data = self._load_qacg_file(qacg_file)
         if not target_system:
             target_system = Path(qacg_file).stem.replace("qacg_", "")
-        
-        # 2. 解析锦标赛排名
+
+        # 2. Parse tournament rankings
         tournament_rankings = self._parse_tournament_rankings(tournament_report_path)
-        
-        # 3. 与锦标赛排名基线对比
+
+        # 3. Compare against tournament ranking baselines
         baseline_results = {}
         total_calls = 0
-        
+
         for rank_name, baseline_info in tournament_rankings.items():
-            self.logger.info(f"🔄 {target_system} vs {rank_name} ({baseline_info['system_name']}) 对比")
-            
-            # 构造基线数据
+            self.logger.info(f"Comparing {target_system} vs {rank_name} ({baseline_info['system_name']})")
+
+            # Construct baseline data
             baseline_data, baseline_generation_calls = self._create_tournament_baseline_data(
                 target_data, baseline_info
             )
-            
-            # 执行对比
+
+            # Execute comparison
             comparison_result = self._pairwise_comparison(
-                target_data, baseline_data, 
+                target_data, baseline_data,
                 f"{target_system}", f"{rank_name}_{baseline_info['system_name']}",
                 max_questions=self.config.max_questions
             )
-            
-            # 保存基线数据以供详细对比使用
+
+            # Save baseline data for detailed comparison
             comparison_result["baseline_data"] = baseline_data
             comparison_result["baseline_generation_calls"] = baseline_generation_calls
             comparison_result["baseline_info"] = baseline_info
             baseline_results[rank_name] = comparison_result
             total_calls += len(comparison_result["question_results"]) + baseline_generation_calls
-        
-        # 4. 统计分析
+
+        # 4. Statistical analysis
         comparison_summary = self._summarize_tournament_baseline_comparison(baseline_results, target_system)
-        
-        # 5. 生成详细QACG对比数据
+
+        # 5. Generate detailed QACG comparison data
         detailed_qacg_comparisons = self._generate_detailed_qacg_comparisons(target_data, target_system, baseline_results)
-        
+
         result = {
             "config": self._config_to_dict(),
             "target_system": target_system,
@@ -1297,24 +1297,24 @@ class SimplifiedDICEEvaluator:
             "detailed_qacg_comparisons": detailed_qacg_comparisons,
             "total_llm_calls": total_calls
         }
-        
-        # 保存结果
+
+        # Save results
         self._save_baseline_result(result)
         return result
     
     def _load_systems(self, qacg_files: List[str]) -> Dict[str, List[Dict]]:
-        """加载所有系统数据"""
+        """Load all systems data."""
         systems = {}
         for file_path in qacg_files:
             system_name = Path(file_path).stem.replace("qacg_", "")
             systems[system_name] = self._load_qacg_file(file_path)
         return systems
-    
+
     def _load_qacg_file(self, file_path: str) -> List[Dict]:
-        """加载QACG文件"""
+        """Load QACG file."""
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data[:self.config.max_questions]  # 限制题目数量
+        return data[:self.config.max_questions]  # Limit to configured number of questions
     
     def _create_groups(self, system_names: List[str]) -> List[List[str]]:
         """创建分组 (根据系统数量自动分组)"""
