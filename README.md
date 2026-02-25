@@ -98,7 +98,7 @@ For a comprehensive comparison of all systems against each other (N*N), use the 
 python src/scripts/run_dice.py --scenario allpairs --input_dir my_systems/
 ```
 
-**To reproduce the original experiment with Qwen2.5 locally**, ensure Ollama is serving and the models are loaded. The framework will automatically use the local Ollama service when configured.
+To reproduce the original experiment with Qwen2.5 locally, ensure Ollama is serving and the models are loaded. The framework will automatically use the local Ollama service when configured.
 
 ### 3. Generate Synthetic Data (Optional)
 
