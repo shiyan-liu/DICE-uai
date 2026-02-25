@@ -31,11 +31,13 @@ This repository implements **DICE** (Discrete Interpretable Comparative Evaluati
 
    - Install Ollama: Download and install from [ollama.ai](https://ollama.ai)
 
-   - Pull the required model:
+   - Pull models required for experiment reproduction:
      ```bash
-     ollama pull qwen2.5:7b  # Main evaluation model (7B version)
-     ollama pull qwen2.5:0.5b  # Optional: smaller variant for testing
+     ollama pull qwen2.5:7b    # Main experiment model 
+     ollama pull qwen2.5:0.5b  # Small experiment model 
      ```
+
+   - Pull the evaluation model (Deepseek-R1) from Hugging Face
 
    - Start Ollama service (in a separate terminal):
      ```bash
