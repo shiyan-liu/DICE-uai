@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DICE 精简版 - 锦标赛和基线对比场景
-专注于 passage 粒度 + 检索-证据双通道判决
+DICE simplified engine - tournament and baseline comparison scenarios.
+Passage-granularity pairwise judgment with retrieval-evidence dual-channel.
 """
 
 import json
@@ -16,17 +16,15 @@ from dataclasses import dataclass
 import concurrent.futures
 import threading
 
-# 导入本地判决器
 from .llm_judge import LocalPairwiseJudge
 from .llm_judge import LocalPairwiseJudge as PairwiseJudge
 
-# 添加tqdm进度条支持
 try:
     from tqdm import tqdm
     TQDM_AVAILABLE = True
 except ImportError:
     TQDM_AVAILABLE = False
-    # 定义一个简单的替代品
+    # Fallback when tqdm is not installed
     class tqdm:
         def __init__(self, iterable=None, total=None, desc=None, **kwargs):
             self.iterable = iterable
@@ -56,7 +54,6 @@ except ImportError:
         def close(self):
             pass
 
-# 添加sklearn导入和异常处理
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.cluster import KMeans
@@ -64,55 +61,52 @@ try:
 except ImportError:
     SKLEARN_AVAILABLE = False
 
-from .llm_judge import LocalPairwiseJudge as PairwiseJudge
-
 
 @dataclass
 class SimplifiedDICEConfig:
-    """精简版DICE配置"""
-    # LLM配置 - 在线API
+    """Simplified DICE configuration."""
+    # LLM config - online API
     llm_model: str = "deepseek-chat"
-    api_key: str = ""  # 从环境变量获取: DEEPSEEK_API_KEY
+    api_key: str = ""  # from env: DEEPSEEK_API_KEY
     base_url: str = "https://api.deepseek.com"
     judge_temperature: float = 0.1
     max_tokens: int = 2048
-    
-    # DeepSeek-R1本地模型配置
-    enable_deep_thinking: bool = True  # 是否启用深度思考模式，默认开启
-    
-    # 评估配置
+
+    # DeepSeek-R1 local model config
+    enable_deep_thinking: bool = True
+
+    # Evaluation config
     max_questions: int = 70
     early_stop_elo_diff: float = 400.0
     early_stop_ci_threshold: float = 30.0
-    
-    # Elo配置
+
+    # Elo config
     initial_elo: float = 1000.0
     k_factor: int = 32
-    
-    # 并发配置 - 双GPU优化
-    max_workers: int = 4  # 最大并发worker数量（双GPU优化：2卡×2worker）
-    batch_size: int = 8   # 每批处理的问题数量（双GPU显存总量~48GB）
-    
-    # 输出配置
+
+    # Concurrency config (dual-GPU)
+    max_workers: int = 4   # max concurrent workers (2 GPUs x 2 workers)
+    batch_size: int = 8    # questions per batch (~48GB total VRAM)
+
+    # Output config
     output_dir: str = "dice_simplified_output"
     save_detailed: bool = True
 
 
 class SimplifiedDICEEvaluator:
-    """DICE精简版评估器"""
-    
+    """Simplified DICE evaluator."""
+
     def __init__(self, config: SimplifiedDICEConfig = None):
         self.config = config or SimplifiedDICEConfig()
         self.logger = logging.getLogger("DICE.Simplified")
         self._setup_logger()
-        
-        # 初始化判决器（仅使用passage粒度）
+
+        # Passage-level pairwise judge
         self.pairwise_judge = LocalPairwiseJudge(self.config)
-        
-        # 并发相关
-        self._lock = threading.Lock()  # 用于同步日志输出
-        
-        # 虚拟基线生成指令
+
+        self._lock = threading.Lock()
+
+        # Virtual baseline generation instructions (Chinese LLM prompts - keep as-is)
         self.baseline_prompts = {
             "Good": {
                 "instruction": "作为一个高质量的RAG系统，请基于给定问题和标准答案生成详细准确的回答。要求：1)提供完整的关键信息，2)逻辑清晰条理分明，3)基于权威可靠的资料，4)准确性高且表述专业。",
@@ -132,26 +126,23 @@ class SimplifiedDICEEvaluator:
         }
         
     def _log_question_result(self, result: Dict[str, Any], completed_count: int, total_questions: int):
-        """线程安全的问题结果日志输出 - 显示soft win信息"""
+        """Thread-safe per-question result logging with soft win info."""
         passage_judgment = result["passage_judgment"]
         question = result["question"]
         score_a = result["score_a"]
         score_b = result["score_b"]
-        
-        self.logger.info(f"    问题 {completed_count}/{total_questions}: {question[:60]}...")
-        self.logger.info(f"    🏆 判决: {passage_judgment.get('win_type', 'Unknown')}")
-        self.logger.info(f"    📈 Logits: A={passage_judgment.get('logit_a', 0):.2f}, B={passage_judgment.get('logit_b', 0):.2f}, T={passage_judgment.get('logit_t', 0):.2f}")
-        self.logger.info(f"    📊 概率: A={passage_judgment.get('prob_a', 0):.3f}, B={passage_judgment.get('prob_b', 0):.3f}, T={passage_judgment.get('prob_t', 0):.3f}")
-        self.logger.info(f"    🔥 概率差距: {passage_judgment.get('prob_diff', 0):.3f} ({'Hard' if passage_judgment.get('prob_diff', 0) >= 0.1 else 'Soft'} win)")
-        self.logger.info(f"    🎯 得分: A={score_a:.3f}, B={score_b:.3f}")
-        # 简化理由输出
-        # self.logger.info(f"    💭 理由: {passage_judgment.get('reason', '')}...")
+
+        self.logger.info(f"    Q {completed_count}/{total_questions}: {question[:60]}...")
+        self.logger.info(f"    Verdict: {passage_judgment.get('win_type', 'Unknown')}")
+        self.logger.info(f"    Logits: A={passage_judgment.get('logit_a', 0):.2f}, B={passage_judgment.get('logit_b', 0):.2f}, T={passage_judgment.get('logit_t', 0):.2f}")
+        self.logger.info(f"    Probs: A={passage_judgment.get('prob_a', 0):.3f}, B={passage_judgment.get('prob_b', 0):.3f}, T={passage_judgment.get('prob_t', 0):.3f}")
+        self.logger.info(f"    Prob gap: {passage_judgment.get('prob_diff', 0):.3f} ({'Hard' if passage_judgment.get('prob_diff', 0) >= 0.1 else 'Soft'} win)")
+        self.logger.info(f"    Scores: A={score_a:.3f}, B={score_b:.3f}")
         self.logger.info("")
     
     def _setup_logger(self):
-        """设置日志"""
+        """Configure logger."""
         self.logger.setLevel(logging.INFO)
-        # 设置propagate=False以避免重复输出到根logger
         self.logger.propagate = False
         if not self.logger.handlers:
             handler = logging.StreamHandler()
@@ -162,38 +153,25 @@ class SimplifiedDICEEvaluator:
             self.logger.addHandler(handler)
     
     def scenario_a_tournament(self, qacg_files: List[str]) -> Dict[str, Any]:
-        """
-        场景A: 八系统锦标赛
-        
-        Args:
-            qacg_files: QACG文件路径列表（8个系统）
-            
-        Returns:
-            锦标赛结果
-        """
-        self.logger.info("🏆 开始场景A: 八系统锦标赛（动态Elo配对系统）")
-        
-        # 1. 加载系统数据
+        """Scenario A: 8-system tournament (dynamic Elo pairing)."""
+        self.logger.info("Starting Scenario A: 8-system tournament (dynamic Elo pairing)")
+
         systems = self._load_systems(qacg_files)
         system_names = list(systems.keys())
-        
+
         if len(system_names) != 8:
-            raise ValueError(f"需要8个系统，实际获得{len(system_names)}个")
-        
-        # 2. 瑞士轮锦标赛（4轮，每轮4场，共16场比赛）
+            raise ValueError(f"Expected 8 systems, got {len(system_names)}")
+
+        # Swiss tournament: 4 rounds, 4 matches per round
         swiss_results = self._swiss_tournament(system_names, systems, num_rounds=4)
-        
-        # 3. 最终排名（基于瑞士轮Elo分数）
+
         final_ranking = self._calculate_dynamic_ranking(swiss_results["final_elo_scores"])
-        
-        # 4. 95% CI分析
+
         all_pairwise_results = swiss_results["all_pairwise_results"]
         ci_analysis = self._bootstrap_ci_analysis(all_pairwise_results, system_names)
-        
-        # 5. 失败模式动态聚类分析
+
         failure_clusters = self._cluster_failure_modes(all_pairwise_results)
-        
-        # 汇总结果
+
         tournament_result = {
             "config": self._config_to_dict(),
             "tournament_type": "swiss_tournament",
@@ -205,38 +183,30 @@ class SimplifiedDICEEvaluator:
             "failure_analysis": failure_clusters
         }
         
-        # 保存结果
         self._save_tournament_result(tournament_result)
         return tournament_result
-    
+
     def scenario_c_full_round_robin(self, qacg_files: List[str]) -> Dict[str, Any]:
-        """
-        场景C: 全对全两两配对（完整循环赛）
-        - 记录所有配对比赛；每个系统之间只对战一次
-        """
-        self.logger.info("🏆 开始场景C: 全对全两两配对（完整循环赛）")
-        
-        # 1. 加载系统数据
+        """Scenario C: full round-robin pairwise comparison (each pair plays once)."""
+        self.logger.info("Starting Scenario C: full round-robin")
+
         systems = self._load_systems(qacg_files)
         system_names = list(systems.keys())
-        
+
         if len(system_names) < 2:
-            raise ValueError(f"需要至少2个系统，实际获得{len(system_names)}个")
-        
-        # 2. 初始化Elo
+            raise ValueError(f"Need at least 2 systems, got {len(system_names)}")
+
         elo_scores = {system: 1500.0 for system in system_names}
         all_pairwise_results = []
         match_records = []
         total_llm_calls = 0
-        
-        # 3. 遍历所有唯一配对（组合）
+
         pair_idx = 0
         total_pairs = len(system_names) * (len(system_names) - 1) // 2
         for sys_a, sys_b in itertools.combinations(system_names, 2):
             pair_idx += 1
-            self.logger.info(f"  📊 第{pair_idx}/{total_pairs}场: {sys_a} (ELO: {elo_scores[sys_a]:.1f}) vs {sys_b} (ELO: {elo_scores[sys_b]:.1f})")
-            
-            # 执行对比
+            self.logger.info(f"  Match {pair_idx}/{total_pairs}: {sys_a} (ELO: {elo_scores[sys_a]:.1f}) vs {sys_b} (ELO: {elo_scores[sys_b]:.1f})")
+
             comparison = self._pairwise_comparison(
                 systems[sys_a], systems[sys_b], sys_a, sys_b, 
                 max_questions=self.config.max_questions
@@ -244,11 +214,9 @@ class SimplifiedDICEEvaluator:
             all_pairwise_results.append(comparison)
             total_llm_calls += len(comparison["question_results"])
             
-            # 更新Elo
             old_elo_a, old_elo_b = elo_scores[sys_a], elo_scores[sys_b]
             self._update_elo_scores_dynamic(elo_scores, comparison, sys_a, sys_b)
-            
-            # 记录比赛
+
             match_records.append({
                 "match_num": pair_idx,
                 "system_a": sys_a,
@@ -261,7 +229,6 @@ class SimplifiedDICEEvaluator:
                 "comparison": comparison
             })
         
-        # 4. 最终排名与分析
         final_ranking = self._calculate_dynamic_ranking(elo_scores)
         ci_analysis = self._bootstrap_ci_analysis(all_pairwise_results, system_names)
         failure_clusters = self._cluster_failure_modes(all_pairwise_results)
@@ -283,53 +250,47 @@ class SimplifiedDICEEvaluator:
             "failure_analysis": failure_clusters
         }
         
-        # 5. 保存
         self._save_tournament_result(result)
         return result
     
-    def _swiss_tournament(self, system_names: List[str], all_systems: Dict[str, List[Dict]], 
+    def _swiss_tournament(self, system_names: List[str], all_systems: Dict[str, List[Dict]],
                          num_rounds: int) -> Dict[str, Any]:
-        """瑞士轮锦标赛实现"""
-        self.logger.info(f"🔄 开始瑞士轮锦标赛，共{num_rounds}轮")
-        
-        # 初始化选手状态
+        """Swiss-system tournament implementation."""
+        self.logger.info(f"Starting Swiss tournament, {num_rounds} rounds")
+
         standings = {}
         for system in system_names:
             standings[system] = {
                 "elo": self.config.initial_elo,
-                "swiss_points": 0.0,  # 瑞士轮积分
+                "swiss_points": 0.0,
                 "wins": 0,
-                "draws": 0, 
+                "draws": 0,
                 "losses": 0,
-                "sb_score": 0.0,  # SB分（对手分数总和）
-                "opponents": []  # 对战过的对手
+                "sb_score": 0.0,  # Solkoff / Buchholz score
+                "opponents": []
             }
         
         rounds = []
         total_llm_calls = 0
         
         for round_num in range(1, num_rounds + 1):
-            self.logger.info(f"🏁 第{round_num}轮开始")
-            
-            # 配对
+            self.logger.info(f"Round {round_num} started")
+
             pairings = self._swiss_pairing(standings, round_num)
-            
-            # 进行比赛
+
             round_results = []
             round_pairwise_results = []
             
             for sys_a, sys_b in pairings:
-                self.logger.info(f"  📊 {sys_a} vs {sys_b}")
-                
-                # 执行对比
+                self.logger.info(f"  {sys_a} vs {sys_b}")
+
                 comparison = self._pairwise_comparison(
                     all_systems[sys_a], all_systems[sys_b], sys_a, sys_b,
-                    max_questions=max(3, self.config.max_questions // num_rounds)  # 每轮使用部分题目
+                    max_questions=max(3, self.config.max_questions // num_rounds)
                 )
                 round_pairwise_results.append(comparison)
                 total_llm_calls += len(comparison["question_results"])
                 
-                # 计算比赛结果
                 result = self._calculate_match_result(comparison)
                 round_results.append({
                     "system_a": sys_a,
@@ -338,13 +299,9 @@ class SimplifiedDICEEvaluator:
                     "comparison": comparison
                 })
                 
-                # 更新ELO分数
                 self._update_elo_scores_swiss(standings, comparison, sys_a, sys_b)
-                
-                # 更新瑞士轮积分和记录
                 self._update_swiss_standings(standings, sys_a, sys_b, result)
             
-            # 保存本轮结果
             rounds.append({
                 "round": round_num,
                 "pairings": pairings,
@@ -353,13 +310,12 @@ class SimplifiedDICEEvaluator:
                 "standings_after_round": self._get_current_standings_snapshot(standings)
             })
             
-            # 计算SB分（需要在每轮后更新）
             self._update_sb_scores(standings)
-            
-            self.logger.info(f"第{round_num}轮结束，当前排名:")
+
+            self.logger.info(f"Round {round_num} finished, current ranking:")
             current_ranking = self._get_current_ranking(standings)
             for i, (system, stats) in enumerate(current_ranking[:3], 1):
-                self.logger.info(f"  {i}. {system}: {stats['swiss_points']:.1f}分 (ELO: {stats['elo']:.1f})")
+                self.logger.info(f"  {i}. {system}: {stats['swiss_points']:.1f}pts (ELO: {stats['elo']:.1f})")
         
         return {
             "rounds": rounds,
@@ -368,19 +324,17 @@ class SimplifiedDICEEvaluator:
         }
     
     def _swiss_pairing(self, standings: Dict[str, Dict], round_num: int) -> List[Tuple[str, str]]:
-        """瑞士轮配对算法"""
+        """Swiss-system pairing algorithm."""
         if round_num == 1:
-            # 第一轮：大小模型交叉配对，测试真实差距
+            # Round 1: cross-pair large vs small models
             systems = list(standings.keys())
             large_systems = [s for s in systems if "large" in s]
             small_systems = [s for s in systems if "small" in s]
-            
+
             pairings = []
-            # 确保每个大模型都有小模型对手
             for i in range(min(len(large_systems), len(small_systems))):
                 pairings.append((large_systems[i], small_systems[i]))
-            
-            # 如果有剩余系统，配对剩下的
+
             remaining_large = large_systems[len(small_systems):]
             remaining_small = small_systems[len(large_systems):]
             
@@ -394,7 +348,7 @@ class SimplifiedDICEEvaluator:
             
             return pairings
         else:
-            # 根据积分和ELO分数配对
+            # Pair by score and Elo
             systems_by_score = sorted(
                 standings.keys(),
                 key=lambda x: (standings[x]["swiss_points"], standings[x]["elo"]),
@@ -408,7 +362,7 @@ class SimplifiedDICEEvaluator:
                 if system_a in paired:
                     continue
                 
-                # 寻找最佳对手（积分相近且未对战过）
+                # Find best opponent (close score, not yet faced)
                 best_opponent = None
                 for j in range(i + 1, len(systems_by_score)):
                     system_b = systems_by_score[j]
@@ -417,7 +371,7 @@ class SimplifiedDICEEvaluator:
                         best_opponent = system_b
                         break
                 
-                # 如果找不到未对战的对手，选择最近的对手
+                # Fallback: pick nearest unpaired opponent
                 if not best_opponent:
                     for j in range(i + 1, len(systems_by_score)):
                         system_b = systems_by_score[j]
@@ -433,7 +387,7 @@ class SimplifiedDICEEvaluator:
             return pairings
     
     def _calculate_match_result(self, comparison: Dict[str, Any]) -> str:
-        """计算比赛结果（胜/平/负）"""
+        """Determine match result (win/draw/loss)."""
         summary = comparison["summary"]
         win_rate_a = summary["win_rate_a"]
         
@@ -444,9 +398,9 @@ class SimplifiedDICEEvaluator:
         else:
             return "draw"
     
-    def _update_elo_scores_swiss(self, standings: Dict[str, Dict], 
+    def _update_elo_scores_swiss(self, standings: Dict[str, Dict],
                                comparison: Dict[str, Any], sys_a: str, sys_b: str):
-        """更新ELO分数（瑞士轮版本，使用加权算法）"""
+        """Update Elo scores (Swiss variant with weighted algorithm)."""
         summary = comparison["summary"]
         win_rate_a = summary["win_rate_a"]
         win_rate_b = summary["win_rate_b"]
@@ -454,44 +408,38 @@ class SimplifiedDICEEvaluator:
         elo_a = standings[sys_a]["elo"]
         elo_b = standings[sys_b]["elo"]
         
-        # 计算期望胜率
         expected_a = 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
         expected_b = 1 - expected_a
-        
-        # 计算分差和加权系数
+
         rating_diff = abs(elo_a - elo_b)
         base_k = self.config.k_factor
-        
-        # 加权系数：基于分差的非线性函数
+
+        # Non-linear weight based on rating gap
         weight_factor = 0.5 + 1.5 * (1 - math.exp(-rating_diff / 200))
-        
-        # 爆冷奖励
+
+        # Upset bonus
         upset_bonus_a = 1.0
         upset_bonus_b = 1.0
-        
-        if elo_a < elo_b and win_rate_a > 0.5:  # A爆冷击败B
+
+        if elo_a < elo_b and win_rate_a > 0.5:
             upset_bonus_a = 1.0 + (rating_diff / 400)
             upset_bonus_b = 1.0 + (rating_diff / 600)
-        elif elo_b < elo_a and win_rate_b > 0.5:  # B爆冷击败A
+        elif elo_b < elo_a and win_rate_b > 0.5:
             upset_bonus_b = 1.0 + (rating_diff / 400)
             upset_bonus_a = 1.0 + (rating_diff / 600)
-        
-        # 计算最终K因子
+
         k_a = base_k * weight_factor * upset_bonus_a
         k_b = base_k * weight_factor * upset_bonus_b
-        
-        # 更新ELO
+
         standings[sys_a]["elo"] += k_a * (win_rate_a - expected_a)
         standings[sys_b]["elo"] += k_b * (win_rate_b - expected_b)
     
-    def _update_swiss_standings(self, standings: Dict[str, Dict], 
+    def _update_swiss_standings(self, standings: Dict[str, Dict],
                               sys_a: str, sys_b: str, result: str):
-        """更新瑞士轮积分和战绩"""
-        # 记录对手
+        """Update Swiss standings and records."""
         standings[sys_a]["opponents"].append(sys_b)
         standings[sys_b]["opponents"].append(sys_a)
         
-        # 更新积分和战绩
         if result == "A_wins":
             standings[sys_a]["swiss_points"] += 1.0
             standings[sys_a]["wins"] += 1
@@ -507,7 +455,7 @@ class SimplifiedDICEEvaluator:
             standings[sys_b]["draws"] += 1
     
     def _update_sb_scores(self, standings: Dict[str, Dict]):
-        """更新SB分（对手分数总和）"""
+        """Update Solkoff/Buchholz scores (sum of opponents' points)."""
         for system in standings:
             sb_score = 0.0
             for opponent in standings[system]["opponents"]:
@@ -515,46 +463,46 @@ class SimplifiedDICEEvaluator:
             standings[system]["sb_score"] = sb_score
     
     def _get_current_standings_snapshot(self, standings: Dict[str, Dict]) -> Dict[str, Dict]:
-        """获取当前积分榜快照"""
+        """Get current standings snapshot."""
         return {system: stats.copy() for system, stats in standings.items()}
-    
+
     def _get_current_ranking(self, standings: Dict[str, Dict]) -> List[Tuple[str, Dict]]:
-        """获取当前排名"""
+        """Get current ranking."""
         return sorted(
             standings.items(),
             key=lambda x: (x[1]["swiss_points"], x[1]["elo"], x[1]["sb_score"]),
             reverse=True
         )
-    
+
     def _calculate_swiss_ranking(self, final_standings: Dict[str, Dict]) -> List[str]:
-        """计算瑞士轮最终排名"""
-        # 排名规则：
-        # 1. 瑞士轮积分（胜1分，平0.5分，负0分）
-        # 2. ELO分数
-        # 3. SB分（对手分数总和）
-        # 4. 胜场数
-        # 5. 系统名称（字典序）
+        """Calculate final Swiss tournament ranking."""
+        # Ranking rules:
+        # 1. Swiss points (win=1, draw=0.5, loss=0)
+        # 2. Elo score
+        # 3. SB score (opponent points sum)
+        # 4. Win count
+        # 5. System name (lexicographic order)
         
         ranked_systems = sorted(
             final_standings.items(),
             key=lambda x: (
-                x[1]["swiss_points"],    # 主要：瑞士轮积分
-                x[1]["elo"],            # 次要：ELO分数
-                x[1]["sb_score"],       # 第三：SB分
-                x[1]["wins"],           # 第四：胜场数
-                x[0]                    # 第五：系统名称
+                x[1]["swiss_points"],
+                x[1]["elo"],
+                x[1]["sb_score"],
+                x[1]["wins"],
+                x[0]
             ),
             reverse=True
         )
-        
+
         return [system for system, _ in ranked_systems]
     
     def _bootstrap_ci_analysis(self, pairwise_results: List[Dict], system_names: List[str]) -> Dict[str, Any]:
-        """执行bootstrap CI分析"""
+        """Execute bootstrap 95% confidence interval analysis."""
         all_score_diffs = []
         for result in pairwise_results:
             for qr in result["question_results"]:
-                # 使用得分差值代替elo_delta
+                # Use score difference instead of elo_delta
                 score_diff = qr["score_a"] - qr["score_b"]
                 all_score_diffs.append(score_diff)
 
@@ -562,25 +510,25 @@ class SimplifiedDICEEvaluator:
             return {
                 "mean_score_diff": 0.0,
                 "ci_95": "0.00 - 0.00",
-                "significance": "无数据"
+                "significance": "no_data"
             }
 
-        # 计算平均得分差
+        # Calculate mean score difference
         mean_score_diff = np.mean(all_score_diffs)
 
-        # 执行bootstrap CI
+        # Execute bootstrap CI
         try:
             from scipy.stats import bootstrap
             boot_results = bootstrap((all_score_diffs,), np.mean, confidence_level=0.95, n_resamples=1000)
             ci_95 = boot_results.confidence_interval
             ci_95_str = f"{ci_95.low:.2f} - {ci_95.high:.2f}"
-            
-            # 显著性判断 (基于CI)
-            significance = "显著" if not (ci_95.low <= 0 <= ci_95.high) else "不显著"
+
+            # Significance judgment (based on CI)
+            significance = "significant" if not (ci_95.low <= 0 <= ci_95.high) else "not_significant"
         except Exception as e:
-            self.logger.warning(f"Bootstrap CI计算失败: {e}")
-            ci_95_str = "计算失败"
-            significance = "未知"
+            self.logger.warning(f"Bootstrap CI calculation failed: {e}")
+            ci_95_str = "calculation_failed"
+            significance = "unknown"
 
         return {
             "mean_score_diff": mean_score_diff,
@@ -589,16 +537,16 @@ class SimplifiedDICEEvaluator:
         }
     
     def _cluster_failure_modes(self, pairwise_results: List[Dict]) -> Dict[str, Any]:
-        """动态语义聚类分析失败模式 - 基于LLM回答的语义相似度"""
-        # 收集所有失败原因文本
+        """Analyze failure modes using dynamic semantic clustering based on LLM response similarity."""
+        # Collect all failure reason texts
         failure_reasons = []
         reason_to_systems = {}
-        
+
         for result in pairwise_results:
             for qr in result["question_results"]:
                 passage_judgment = qr.get("passage_judgment", {})
                 reason = passage_judgment.get("reason", "")
-                if reason and len(reason.strip()) > 10:  # 过滤太短的原因
+                if reason and len(reason.strip()) > 10:  # Filter overly short reasons
                     failure_reasons.append(reason.strip())
                     if reason not in reason_to_systems:
                         reason_to_systems[reason] = set()
@@ -606,10 +554,10 @@ class SimplifiedDICEEvaluator:
                     reason_to_systems[reason].add(result["system_b"])
 
         if len(failure_reasons) < 5:
-            # 数据不足，返回简单统计
+            # Insufficient data, return simple statistics
             return {
                 "cluster_0": {
-                    "label": "失败原因分析",
+                    "label": "Failure reason analysis",
                     "systems": list(set().union(*reason_to_systems.values())) if reason_to_systems else [],
                     "reasons": failure_reasons,
                     "top_keywords": self._extract_top_keywords(failure_reasons),
@@ -619,66 +567,66 @@ class SimplifiedDICEEvaluator:
 
         try:
             if not SKLEARN_AVAILABLE:
-                self.logger.warning("sklearn不可用，跳过动态语义聚类，返回简单统计")
+                self.logger.warning("sklearn unavailable, skipping dynamic semantic clustering, returning simple statistics")
                 return {
                     "cluster_0": {
-                        "label": "失败原因分析(简化模式)",
+                        "label": "Failure reason analysis (simplified mode)",
                         "systems": list(set().union(*reason_to_systems.values())) if reason_to_systems else [],
                         "reasons": failure_reasons,
                         "top_keywords": self._extract_top_keywords(failure_reasons),
                         "size": len(failure_reasons)
                     }
                 }
-            
-            # 动态TF-IDF向量化（中文分词友好）
+
+            # Dynamic TF-IDF vectorization (Chinese tokenization friendly)
             vectorizer = TfidfVectorizer(
-                max_features=200, 
-                stop_words=None, 
+                max_features=200,
+                stop_words=None,
                 ngram_range=(1, 3),
                 min_df=1,
                 max_df=0.8,
-                token_pattern=r'[\u4e00-\u9fff]+|[a-zA-Z]+\d*'  # 中文字符或英文单词
+                token_pattern=r'[\u4e00-\u9fff]+|[a-zA-Z]+\d*'  # Chinese characters or English words
             )
             tfidf_matrix = vectorizer.fit_transform(failure_reasons)
-            
-            # 动态确定聚类数量（基于数据规模和语义相似度）
+
+            # Dynamically determine optimal number of clusters (based on data scale and semantic similarity)
             n_clusters = self._determine_optimal_clusters(tfidf_matrix, failure_reasons)
-            
+
             if n_clusters <= 1:
-                # 聚类效果不佳，返回统一分析
+                # Poor clustering, return unified analysis
                 return {
                     "cluster_0": {
-                        "label": "通用失败模式",
+                        "label": "General failure pattern",
                         "systems": list(set().union(*reason_to_systems.values())) if reason_to_systems else [],
                         "reasons": failure_reasons,
                         "top_keywords": self._extract_top_keywords(failure_reasons),
                         "size": len(failure_reasons)
                     }
                 }
-            
-            # K-means聚类
+
+            # K-means clustering
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
             cluster_labels = kmeans.fit_predict(tfidf_matrix)
-            
-            # 动态生成聚类标签
+
+            # Dynamic cluster label generation
             feature_names = vectorizer.get_feature_names_out()
             clusters = {}
-            
+
             for cluster_id in range(n_clusters):
                 cluster_reasons = [failure_reasons[i] for i, label in enumerate(cluster_labels) if label == cluster_id]
                 cluster_systems = set()
-                
-                # 收集该聚类对应的系统
+
+                # Collect systems for this cluster
                 for reason in cluster_reasons:
                     if reason in reason_to_systems:
                         cluster_systems.update(reason_to_systems[reason])
-                
-                # 动态生成聚类标签（基于TF-IDF权重最高的词）
+
+                # Dynamically generate cluster label (based on highest TF-IDF weighted terms)
                 cluster_label = self._generate_cluster_label(cluster_reasons, feature_names, kmeans.cluster_centers_[cluster_id])
-                
-                # 提取该聚类的关键词
+
+                # Extract keywords for this cluster
                 top_keywords = self._extract_cluster_keywords(cluster_reasons, feature_names)
-                
+
                 clusters[f"cluster_{cluster_id}"] = {
                     "label": cluster_label,
                     "systems": list(cluster_systems),
@@ -686,18 +634,18 @@ class SimplifiedDICEEvaluator:
                     "top_keywords": top_keywords,
                     "size": len(cluster_reasons)
                 }
-            
-            # 按聚类大小排序
+
+            # Sort clusters by size
             sorted_clusters = dict(sorted(clusters.items(), key=lambda x: x[1]["size"], reverse=True))
-            
+
             return sorted_clusters
-            
+
         except Exception as e:
-            self.logger.warning(f"动态语义聚类失败: {e}")
-            # 返回简单的关键词统计
+            self.logger.warning(f"Dynamic semantic clustering failed: {e}")
+            # Return simple keyword statistics
             return {
                 "cluster_0": {
-                    "label": "失败模式分析",
+                    "label": "Failure pattern analysis",
                     "systems": list(set().union(*reason_to_systems.values())) if reason_to_systems else [],
                     "reasons": failure_reasons,
                     "top_keywords": self._extract_top_keywords(failure_reasons),
@@ -706,10 +654,10 @@ class SimplifiedDICEEvaluator:
             }
     
     def _determine_optimal_clusters(self, tfidf_matrix, failure_reasons: List[str]) -> int:
-        """动态确定最优聚类数量"""
+        """Dynamically determine optimal number of clusters."""
         n_samples = len(failure_reasons)
-        
-        # 基于数据规模确定聚类数量范围
+
+        # Determine cluster count range based on data scale
         if n_samples < 5:
             return 1
         elif n_samples < 15:
@@ -718,81 +666,81 @@ class SimplifiedDICEEvaluator:
             max_clusters = 3
         else:
             max_clusters = min(5, n_samples // 8)
-        
-        # 使用轮廓系数选择最优聚类数
+
+        # Use silhouette coefficient to select optimal cluster count
         try:
             from sklearn.metrics import silhouette_score
             best_n_clusters = 1
             best_score = -1
-            
+
             for n in range(2, max_clusters + 1):
                 kmeans = KMeans(n_clusters=n, random_state=42, n_init=10)
                 labels = kmeans.fit_predict(tfidf_matrix)
                 score = silhouette_score(tfidf_matrix, labels)
-                
-                if score > best_score and score > 0.3:  # 要求一定的聚类质量
+
+                if score > best_score and score > 0.3:  # Require certain clustering quality
                     best_score = score
                     best_n_clusters = n
-            
+
             return best_n_clusters
-            
+
         except Exception:
-            # 轮廓分析失败，使用启发式规则
+            # Silhouette analysis failed, use heuristic rules
             return min(3, max(1, n_samples // 10))
     
-    def _generate_cluster_label(self, cluster_reasons: List[str], 
+    def _generate_cluster_label(self, cluster_reasons: List[str],
                               feature_names: list, cluster_center: list) -> str:
-        """基于TF-IDF权重动态生成聚类标签"""
+        """Dynamically generate cluster labels based on TF-IDF weights."""
         try:
-            # 获取权重最高的前3个特征
-            top_indices = sorted(range(len(cluster_center)), 
+            # Get top 3 features by weight
+            top_indices = sorted(range(len(cluster_center)),
                                key=lambda i: cluster_center[i], reverse=True)[:3]
             top_features = [feature_names[i] for i in top_indices if cluster_center[i] > 0]
-            
+
             if not top_features:
-                return "未分类失败模式"
-            
-            # 基于关键特征生成有意义的标签
+                return "Uncategorized failure pattern"
+
+            # Generate meaningful labels based on key features
             label_mapping = {
-                ('检索', '缺失', '段落'): "检索缺关键段",
-                ('数字', '错误', '计算'): "数值计算错误", 
-                ('逻辑', '跳跃', '推理'): "逻辑推理问题",
-                ('证据', '不足', '支撑'): "证据支撑不足",
-                ('回答', '不完整', '缺失'): "回答不完整",
-                ('理解', '错误', '理解'): "理解偏差",
-                ('格式', '错误', '结构'): "格式结构问题"
+                ('retrieval', 'missing', 'passage'): "Retrieval missing key passages",
+                ('numeric', 'error', 'calculation'): "Numeric calculation error",
+                ('logic', 'jump', 'reasoning'): "Logic reasoning issue",
+                ('evidence', 'insufficient', 'support'): "Insufficient evidence support",
+                ('answer', 'incomplete', 'missing'): "Answer incomplete",
+                ('understanding', 'error', 'understanding'): "Understanding deviation",
+                ('format', 'error', 'structure'): "Format structure issue"
             }
-            
-            # 尝试匹配预定义模式
+
+            # Try matching predefined patterns
             top_features_str = ' '.join(top_features)
             for pattern, label in label_mapping.items():
                 if any(keyword in top_features_str for keyword in pattern):
                     return label
-            
-            # 如果没有匹配，基于最重要的特征生成标签
+
+            # If no match, generate label based on most important feature
             main_feature = top_features[0]
-            if '检索' in main_feature or '查找' in main_feature:
-                return "检索相关问题"
-            elif '回答' in main_feature or '答案' in main_feature:
-                return "回答质量问题"
-            elif '逻辑' in main_feature or '推理' in main_feature:
-                return "逻辑推理问题"
-            elif '数字' in main_feature or '计算' in main_feature:
-                return "数值处理问题"
+            if 'retrieval' in main_feature or 'search' in main_feature:
+                return "Retrieval-related issue"
+            elif 'answer' in main_feature or 'response' in main_feature:
+                return "Answer quality issue"
+            elif 'logic' in main_feature or 'reasoning' in main_feature:
+                return "Logic reasoning issue"
+            elif 'numeric' in main_feature or 'calculation' in main_feature:
+                return "Numeric processing issue"
             else:
-                return f"{main_feature}相关问题"
-                
+                return f"{main_feature}-related issue"
+
         except Exception:
-            return "失败模式"
+            return "Failure pattern"
     
     def _extract_cluster_keywords(self, cluster_reasons: List[str], feature_names: list) -> List[Tuple[str, int]]:
-        """提取聚类的关键词及频次"""
+        """Extract keywords and their frequency from cluster."""
         try:
             if not SKLEARN_AVAILABLE:
-                # 简化的关键词提取
+                # Simplified keyword extraction
                 return self._extract_top_keywords(cluster_reasons)
-            
-            # 重新对该聚类的文本进行TF-IDF分析
+
+            # Re-analyze TF-IDF for this cluster's text
             vectorizer = TfidfVectorizer(
                 max_features=50,
                 ngram_range=(1, 2),
@@ -800,98 +748,98 @@ class SimplifiedDICEEvaluator:
             )
             tfidf_matrix = vectorizer.fit_transform(cluster_reasons)
             feature_names = vectorizer.get_feature_names_out()
-            
-            # 计算TF-IDF总分
+
+            # Calculate TF-IDF total scores
             tfidf_scores = tfidf_matrix.sum(axis=0).A1
-            
-            # 获取前5个关键词
-            top_indices = sorted(range(len(tfidf_scores)), 
+
+            # Get top 5 keywords
+            top_indices = sorted(range(len(tfidf_scores)),
                                key=lambda i: tfidf_scores[i], reverse=True)[:5]
-            
+
             top_keywords = []
             for idx in top_indices:
                 if tfidf_scores[idx] > 0:
                     keyword = feature_names[idx]
-                    # 计算该词在文本中的出现次数
+                    # Count how many times this keyword appears in texts
                     count = sum(1 for reason in cluster_reasons if keyword in reason)
                     top_keywords.append((keyword, count))
-            
+
             return top_keywords
-            
+
         except Exception:
             return self._extract_top_keywords(cluster_reasons)
-    
+
     def _extract_top_keywords(self, reasons: List[str]) -> List[Tuple[str, int]]:
-        """简单的关键词提取（备用方法）"""
+        """Simple keyword extraction (fallback method)."""
         common_keywords = [
-            "检索", "缺失", "不足", "错误", "不准确", "不完整", "不相关", 
-            "逻辑", "推理", "证据", "支撑", "回答", "数字", "计算", "理解",
-            "段落", "文档", "信息", "关键", "重要", "遗漏", "偏差"
+            "retrieval", "missing", "insufficient", "error", "inaccurate", "incomplete", "irrelevant",
+            "logic", "reasoning", "evidence", "support", "answer", "numeric", "calculation", "understanding",
+            "passage", "document", "information", "key", "important", "omission", "deviation"
         ]
-        
+
         keyword_counts = defaultdict(int)
         all_text = ' '.join(reasons)
-        
+
         for keyword in common_keywords:
             count = all_text.count(keyword)
             if count > 0:
                 keyword_counts[keyword] = count
-        
-        # 返回前5个关键词
+
+        # Return top 5 keywords
         return sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)[:5]
     
-    def _swiss_tournament(self, system_names: List[str], all_systems: Dict[str, List[Dict]], 
+    def _swiss_tournament(self, system_names: List[str], all_systems: Dict[str, List[Dict]],
                          num_rounds: int = 4) -> Dict[str, Any]:
-        """瑞士轮锦标赛 - 4轮比赛，每轮4场，每队每轮只比一场"""
-        self.logger.info(f"🔄 开始瑞士轮锦标赛，{num_rounds}轮比赛")
-        
-        # 初始化所有队伍Elo=1500（无先验信息）
+        """Swiss tournament - 4 rounds, 4 matches per round, each team plays once per round."""
+        self.logger.info(f"Starting Swiss tournament with {num_rounds} rounds")
+
+        # Initialize all teams with Elo=1500 (no prior information)
         elo_scores = {system: 1500.0 for system in system_names}
-        match_history = set()  # 记录已对战的队伍对
+        match_history = set()  # Record pairs that have played
         all_pairwise_results = []
         match_records = []
         total_llm_calls = 0
-        
-        # 瑞士轮进度条
-        tournament_progress = tqdm(range(1, num_rounds + 1), 
-                                 desc="🏆 瑞士轮进度", 
-                                 unit="轮",
+
+        # Swiss tournament progress bar
+        tournament_progress = tqdm(range(1, num_rounds + 1),
+                                 desc="Swiss tournament progress",
+                                 unit="round",
                                  ncols=100,
                                  colour='green')
-        
+
         for round_num in tournament_progress:
-            self.logger.info(f"🏁 第{round_num}轮比赛")
-            
-            # 为当前轮次选择配对
+            self.logger.info(f"Round {round_num} started")
+
+            # Select pairings for this round
             round_pairs = self._select_swiss_round_pairs(elo_scores, match_history, system_names)
-            
+
             if not round_pairs:
-                self.logger.info("无法找到更多有效配对，提前结束")
+                self.logger.info("No more valid pairings available, ending early")
                 tournament_progress.close()
                 break
-            
-            # 执行当前轮次的所有比赛
+
+            # Execute all matches for this round
             for match_idx, (sys_a, sys_b) in enumerate(round_pairs, 1):
                 match_num = (round_num - 1) * 4 + match_idx
-                self.logger.info(f"  📊 第{match_num}场: {sys_a} (ELO: {elo_scores[sys_a]:.1f}) vs {sys_b} (ELO: {elo_scores[sys_b]:.1f})")
-                
-                # 记录这场对战
+                self.logger.info(f"  Match {match_num}: {sys_a} (ELO: {elo_scores[sys_a]:.1f}) vs {sys_b} (ELO: {elo_scores[sys_b]:.1f})")
+
+                # Record this match
                 match_history.add((sys_a, sys_b))
-                match_history.add((sys_b, sys_a))  # 双向记录
-                
-                # 执行对比
+                match_history.add((sys_b, sys_a))  # Bidirectional record
+
+                # Execute comparison
                 comparison = self._pairwise_comparison(
                     all_systems[sys_a], all_systems[sys_b], sys_a, sys_b,
                     max_questions=self.config.max_questions
                 )
                 all_pairwise_results.append(comparison)
                 total_llm_calls += len(comparison["question_results"])
-                
-                # 更新Elo分数
+
+                # Update Elo scores
                 old_elo_a, old_elo_b = elo_scores[sys_a], elo_scores[sys_b]
                 self._update_elo_scores_dynamic(elo_scores, comparison, sys_a, sys_b)
-                
-                # 记录详细比赛信息
+
+                # Record detailed match info
                 match_records.append({
                     "round": round_num,
                     "match_num": match_num,
@@ -904,17 +852,17 @@ class SimplifiedDICEEvaluator:
                     "winner": self._determine_winner(comparison),
                     "comparison": comparison
                 })
-            
-            # 输出当前轮次后的排名
+
+            # Output current ranking after this round
             current_ranking = sorted(system_names, key=lambda x: elo_scores[x], reverse=True)
-            self.logger.info(f"  第{round_num}轮后排名: {current_ranking[0]}({elo_scores[current_ranking[0]]:.1f}) > {current_ranking[1]}({elo_scores[current_ranking[1]]:.1f}) > {current_ranking[2]}({elo_scores[current_ranking[2]]:.1f})")
-            
-            # 更新进度条描述
-            tournament_progress.set_description(f"🏆 第{round_num}轮完成 - 领先: {current_ranking[0]}")
-        
-        # 关闭进度条
+            self.logger.info(f"  Round {round_num} complete, ranking: {current_ranking[0]}({elo_scores[current_ranking[0]]:.1f}) > {current_ranking[1]}({elo_scores[current_ranking[1]]:.1f}) > {current_ranking[2]}({elo_scores[current_ranking[2]]:.1f})")
+
+            # Update progress bar description
+            tournament_progress.set_description(f"Round {round_num} complete - Leader: {current_ranking[0]}")
+
+        # Close progress bar
         tournament_progress.close()
-        
+
         return {
             "match_records": match_records,
             "all_pairwise_results": all_pairwise_results,
@@ -924,115 +872,115 @@ class SimplifiedDICEEvaluator:
             "total_rounds": num_rounds
         }
     
-    def _select_swiss_round_pairs(self, elo_scores: Dict[str, float], match_history: set, 
+    def _select_swiss_round_pairs(self, elo_scores: Dict[str, float], match_history: set,
                                  system_names: List[str]) -> List[Tuple[str, str]]:
-        """为瑞士轮选择当前轮次的配对 - 改进版本"""
-        # 生成所有可能的对战组合
+        """Select pairings for current round of Swiss tournament - improved version."""
+        # Generate all possible match combinations
         all_possible_pairs = []
         for i, sys_a in enumerate(system_names):
             for sys_b in system_names[i+1:]:
                 if (sys_a, sys_b) not in match_history:
                     elo_diff = abs(elo_scores[sys_a] - elo_scores[sys_b])
                     all_possible_pairs.append((sys_a, sys_b, elo_diff))
-        
-        # 按Elo差距排序（优先选择Elo接近的对战）
+
+        # Sort by Elo difference (prioritize pairings with close Elos)
         all_possible_pairs.sort(key=lambda x: x[2])
-        
-        # 使用回溯算法找到最优的4场对战组合
+
+        # Use backtracking to find optimal 4-match combination
         best_combination = self._find_best_round_combination(all_possible_pairs, len(system_names) // 2)
-        
+
         if best_combination:
             return [(pair[0], pair[1]) for pair in best_combination]
         else:
-            self.logger.warning("无法找到有效的瑞士轮配对组合")
+            self.logger.warning("Unable to find valid Swiss tournament pairing combination")
             return []
-    
-    def _find_best_round_combination(self, all_pairs: List[Tuple[str, str, float]], 
+
+    def _find_best_round_combination(self, all_pairs: List[Tuple[str, str, float]],
                                    target_pairs: int) -> List[Tuple[str, str, float]]:
-        """使用回溯算法找到最优的轮次对战组合"""
-        def backtrack(used_systems: set, current_pairs: List[Tuple[str, str, float]], 
+        """Use backtracking to find optimal round match combination."""
+        def backtrack(used_systems: set, current_pairs: List[Tuple[str, str, float]],
                      pair_index: int) -> List[Tuple[str, str, float]]:
-            # 如果已经找到足够的配对，返回结果
+            # If found enough pairings, return result
             if len(current_pairs) == target_pairs:
                 return current_pairs.copy()
-            
-            # 如果已经检查完所有可能的配对，返回None
+
+            # If checked all possible pairings, return None
             if pair_index >= len(all_pairs):
                 return None
-            
-            # 尝试包含当前配对
+
+            # Try including current pairing
             sys_a, sys_b, elo_diff = all_pairs[pair_index]
             if sys_a not in used_systems and sys_b not in used_systems:
                 used_systems.add(sys_a)
                 used_systems.add(sys_b)
                 current_pairs.append(all_pairs[pair_index])
-                
+
                 result = backtrack(used_systems, current_pairs, pair_index + 1)
                 if result:
                     return result
-                
-                # 回溯
+
+                # Backtrack
                 current_pairs.pop()
                 used_systems.remove(sys_a)
                 used_systems.remove(sys_b)
-            
-            # 尝试跳过当前配对
+
+            # Try skipping current pairing
             return backtrack(used_systems, current_pairs, pair_index + 1)
-        
-        # 开始回溯搜索
+
+        # Start backtracking search
         result = backtrack(set(), [], 0)
         return result if result else []
     
-    def _dynamic_elo_tournament(self, system_names: List[str], all_systems: Dict[str, List[Dict]], 
+    def _dynamic_elo_tournament(self, system_names: List[str], all_systems: Dict[str, List[Dict]],
                                max_matches: int) -> Dict[str, Any]:
-        """动态Elo配对锦标赛 - 根据updated_recommandation.md"""
-        self.logger.info(f"🔄 开始动态Elo配对锦标赛，最大{max_matches}场比赛")
-        
-        # 初始化所有队伍Elo=1500（无先验信息）
+        """Dynamic Elo pairing tournament (based on recommendations)."""
+        self.logger.info(f"Starting dynamic Elo pairing tournament with max {max_matches} matches")
+
+        # Initialize all teams with Elo=1500 (no prior information)
         elo_scores = {system: 1500.0 for system in system_names}
-        match_history = set()  # 记录已对战的队伍对
+        match_history = set()  # Record pairs that have played
         all_pairwise_results = []
         match_records = []
         total_llm_calls = 0
-        
-        # 动态配对直到达到最大场次 - 添加总体进度条
-        tournament_progress = tqdm(range(1, max_matches + 1), 
-                                 desc="🏆 锦标赛进度", 
-                                 unit="场比赛",
+
+        # Dynamic pairing until max matches - add overall progress bar
+        tournament_progress = tqdm(range(1, max_matches + 1),
+                                 desc="Tournament progress",
+                                 unit="match",
                                  ncols=100,
                                  colour='green')
-        
+
         for match_num in tournament_progress:
-            self.logger.info(f"🏁 第{match_num}场比赛")
-            
-            # 选择当前Elo最接近的未对战过的两队
+            self.logger.info(f"Match {match_num} started")
+
+            # Select closest Elo pair that hasn't played yet
             best_pair = self._find_best_elo_pair(elo_scores, match_history)
-            
+
             if not best_pair:
-                self.logger.info("所有可能的对战已完成，提前结束")
+                self.logger.info("All possible matches complete, ending early")
                 tournament_progress.close()
                 break
-                
+
             sys_a, sys_b = best_pair
-            self.logger.info(f"  📊 {sys_a} (ELO: {elo_scores[sys_a]:.1f}) vs {sys_b} (ELO: {elo_scores[sys_b]:.1f})")
-            
-            # 记录这场对战
+            self.logger.info(f"  {sys_a} (ELO: {elo_scores[sys_a]:.1f}) vs {sys_b} (ELO: {elo_scores[sys_b]:.1f})")
+
+            # Record this match
             match_history.add((sys_a, sys_b))
-            match_history.add((sys_b, sys_a))  # 双向记录
-            
-            # 执行对比
+            match_history.add((sys_b, sys_a))  # Bidirectional record
+
+            # Execute comparison
             comparison = self._pairwise_comparison(
                 all_systems[sys_a], all_systems[sys_b], sys_a, sys_b,
-                max_questions=self.config.max_questions  # 使用用户设置的完整题目数
+                max_questions=self.config.max_questions  # Use full full question count from config
             )
             all_pairwise_results.append(comparison)
             total_llm_calls += len(comparison["question_results"])
-            
-            # 更新Elo分数（使用加权算法）
+
+            # Update Elo scores (using weighted algorithm)
             old_elo_a, old_elo_b = elo_scores[sys_a], elo_scores[sys_b]
             self._update_elo_scores_dynamic(elo_scores, comparison, sys_a, sys_b)
-            
-            # 记录详细比赛信息
+
+            # Record detailed match info
             match_records.append({
                 "match_num": match_num,
                 "system_a": sys_a,
@@ -1044,19 +992,19 @@ class SimplifiedDICEEvaluator:
                 "winner": self._determine_winner(comparison),
                 "comparison": comparison
             })
-            
-            # 输出当前排名（前3名）
+
+            # Output current ranking (top 3)
             current_ranking = sorted(system_names, key=lambda x: elo_scores[x], reverse=True)
-            self.logger.info(f"  当前排名: {current_ranking[0]}({elo_scores[current_ranking[0]]:.1f}) > {current_ranking[1]}({elo_scores[current_ranking[1]]:.1f}) > {current_ranking[2]}({elo_scores[current_ranking[2]]:.1f})")
-            
-            # 更新进度条描述
-            tournament_progress.set_description(f"🏆 第{match_num}场完成 - 领先: {current_ranking[0]}")
-            
-            # 收敛机制已移除 - 运行完整场次以获得更准确排名
-        
-        # 关闭进度条
+            self.logger.info(f"  Current ranking: {current_ranking[0]}({elo_scores[current_ranking[0]]:.1f}) > {current_ranking[1]}({elo_scores[current_ranking[1]]:.1f}) > {current_ranking[2]}({elo_scores[current_ranking[2]]:.1f})")
+
+            # Update progress bar description
+            tournament_progress.set_description(f"Match {match_num} complete - Leader: {current_ranking[0]}")
+
+            # Convergence mechanism removed - run full matches for more accurate ranking
+
+        # Close progress bar
         tournament_progress.close()
-        
+
         return {
             "match_records": match_records,
             "all_pairwise_results": all_pairwise_results,
@@ -1066,82 +1014,82 @@ class SimplifiedDICEEvaluator:
         }
     
     def _find_best_elo_pair(self, elo_scores: Dict[str, float], match_history: set) -> Tuple[str, str]:
-        """寻找Elo最接近的未对战过的两队"""
+        """Find two teams with closest Elo that haven't played yet."""
         systems = list(elo_scores.keys())
         best_pair = None
         min_elo_diff = float('inf')
-        
+
         for i, sys_a in enumerate(systems):
             for j, sys_b in enumerate(systems[i+1:], i+1):
-                # 检查是否已对战过
+                # Check if they've played before
                 if (sys_a, sys_b) in match_history:
                     continue
-                
-                # 计算Elo差距
+
+                # Calculate Elo difference
                 elo_diff = abs(elo_scores[sys_a] - elo_scores[sys_b])
-                
+
                 if elo_diff < min_elo_diff:
                     min_elo_diff = elo_diff
                     best_pair = (sys_a, sys_b)
-        
+
         return best_pair
-    
-    def _update_elo_scores_dynamic(self, elo_scores: Dict[str, float], 
+
+    def _update_elo_scores_dynamic(self, elo_scores: Dict[str, float],
                                  comparison: Dict[str, Any], sys_a: str, sys_b: str):
-        """动态Elo更新（新的soft win评分机制）- 简化版本"""
+        """Update Elo scores (new soft win scoring mechanism) - simplified version."""
         summary = comparison["summary"]
-        
-        # 新的评分机制已经计算好了elo_delta
+
+        # New scoring mechanism already calculated elo_delta
         elo_delta = summary["elo_delta"]
-        
+
         old_elo_a = elo_scores[sys_a]
         old_elo_b = elo_scores[sys_b]
-        
-        # 直接应用elo_delta（A获得的分数变化）
+
+        # Apply elo_delta directly (change in A's score)
         elo_scores[sys_a] += elo_delta
-        elo_scores[sys_b] -= elo_delta  # B的变化与A相反
-        
-        # 记录详细变化信息（便于调试）
-        self.logger.debug(f"Elo更新: {sys_a}({old_elo_a:.1f}→{elo_scores[sys_a]:.1f}, +{elo_delta:.1f}) vs {sys_b}({old_elo_b:.1f}→{elo_scores[sys_b]:.1f}, {-elo_delta:.1f})")
+        elo_scores[sys_b] -= elo_delta  # B's change is opposite
+
+        # Record detailed change info (for debugging)
+        self.logger.debug(f"Elo update: {sys_a}({old_elo_a:.1f}->{elo_scores[sys_a]:.1f}, +{elo_delta:.1f}) vs {sys_b}({old_elo_b:.1f}->{elo_scores[sys_b]:.1f}, {-elo_delta:.1f})")
     
     def _determine_winner(self, comparison: Dict[str, Any]) -> str:
-        """确定比赛胜者"""
+        """Determine match winner."""
         summary = comparison["summary"]
         win_rate_a = summary["win_rate_a"]
-        
+
         if win_rate_a > 0.6:
             return "A"
         elif win_rate_a < 0.4:
             return "B"
         else:
             return "Tie"
-    
-    # 收敛检查方法已移除 - 使用完整场次评估以获得更准确的排名
+
+    # Early stopping methods removed per user request - use full match count for accurate ranking
     
     def _calculate_dynamic_ranking(self, final_elo_scores: Dict[str, float]) -> List[str]:
-        """基于最终Elo分数计算排名"""
+        """Calculate ranking based on final Elo scores."""
         return sorted(final_elo_scores.keys(), key=lambda x: final_elo_scores[x], reverse=True)
-    
+
     def _parse_tournament_rankings(self, tournament_report_path: str = None) -> Dict[str, Dict]:
-        """解析锦标赛排名，提取1、5、8名的系统信息"""
+        """Parse tournament rankings, extracting 1st, 5th, and 8th place system info."""
         if not tournament_report_path:
-            # 使用默认路径
+            # Use default path
             tournament_report_path = "dice_simplified_output/tournament_report.md"
-        
+
         try:
             with open(tournament_report_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-            
-            # 解析排名
+
+            # Parse rankings
             rankings = {}
             lines = content.split('\n')
-            
+
             for i, line in enumerate(lines):
                 if '**bge-' in line and '**:' in line:
-                    # 提取排名（从当前行直接提取）
+                    # Extract ranking (directly from current line)
                     rank = None
-                    
-                    # 从行首提取排名数字
+
+                    # Extract rank number from line start
                     line_stripped = line.strip()
                     if line_stripped.startswith('1.'):
                         rank = 1
@@ -1159,41 +1107,41 @@ class SimplifiedDICEEvaluator:
                         rank = 7
                     elif line_stripped.startswith('8.'):
                         rank = 8
-                    
+
                     if rank is None:
                         continue
-                    
+
                     parts = line.split('**:')
                     if len(parts) == 2:
                         system_name = parts[0].replace('**', '').strip()
-                        # 移除排名前缀（如 "1. ", "2. " 等）
+                        # Remove rank prefix like "1. ", "2. ", etc.
                         if '. ' in system_name:
                             system_name = system_name.split('. ', 1)[1]
                         elo_score = float(parts[1].strip().split()[0])
-                        
+
                         rankings[rank] = {
                             'system_name': system_name,
                             'elo_score': elo_score,
                             'rank': rank
                         }
-            
-            # 确保有1、5、8名
+
+            # Ensure we have 1st, 5th, 8th place
             required_ranks = [1, 5, 8]
             result = {}
-            
+
             for rank in required_ranks:
                 if rank in rankings:
                     rank_name = {1: "1st_Place", 5: "5th_Place", 8: "8th_Place"}[rank]
                     result[rank_name] = rankings[rank]
                 else:
-                    self.logger.warning(f"未找到第{rank}名的系统信息")
-            
-            self.logger.info(f"解析到锦标赛排名: {list(result.keys())}")
+                    self.logger.warning(f"System at rank {rank} not found")
+
+            self.logger.info(f"Parsed tournament rankings: {list(result.keys())}")
             return result
-            
+
         except Exception as e:
-            self.logger.error(f"解析锦标赛排名失败: {e}")
-            # 返回默认的虚拟基线
+            self.logger.error(f"Failed to parse tournament rankings: {e}")
+            # Return default virtual baselines
             return {
                 "1st_Place": {"system_name": "tournament_1st", "elo_score": 1520.0, "rank": 1},
                 "5th_Place": {"system_name": "tournament_5th", "elo_score": 1495.0, "rank": 5},
@@ -1201,78 +1149,78 @@ class SimplifiedDICEEvaluator:
             }
     
     def _create_tournament_baseline_data(self, target_data: List[Dict], baseline_info: Dict) -> Tuple[List[Dict], int]:
-        """基于锦标赛排名创建基线数据"""
+        """Create baseline data based on tournament ranking."""
         baseline_name = baseline_info['system_name']
         elo_score = baseline_info['elo_score']
         rank = baseline_info['rank']
-        
-        # 根据排名调整生成质量
+
+        # Adjust generation quality based on rank
         if rank == 1:
             quality_level = "high"
-            instruction = f"作为锦标赛第1名的系统({baseline_name}, Elo: {elo_score:.1f})，请生成高质量回答。要求：1)提供完整准确的信息，2)逻辑清晰条理分明，3)基于权威资料，4)表述专业准确。"
+            instruction = f"As system ranked 1st in tournament ({baseline_name}, Elo: {elo_score:.1f}), generate high-quality answer. Requirements: 1)Provide complete accurate information, 2)Clear logical structure, 3)Based on authoritative materials, 4)Professional expression."
         elif rank == 5:
             quality_level = "medium"
-            instruction = f"作为锦标赛第5名的系统({baseline_name}, Elo: {elo_score:.1f})，请生成中等质量回答。要求：1)包含主要信息但可能缺少细节，2)表述基本准确但不够深入，3)信息完整性中等。"
+            instruction = f"As system ranked 5th in tournament ({baseline_name}, Elo: {elo_score:.1f}), generate medium-quality answer. Requirements: 1)Main information with possible details missing, 2)Basically accurate but not deep enough, 3)Medium information completeness."
         else:  # rank == 8
             quality_level = "low"
-            instruction = f"作为锦标赛第8名的系统({baseline_name}, Elo: {elo_score:.1f})，请生成较低质量回答。要求：1)信息不够准确或有遗漏，2)表述可能含糊不清，3)可能包含错误或无关信息。"
-        
-        # 生成基线数据
+            instruction = f"As system ranked 8th in tournament ({baseline_name}, Elo: {elo_score:.1f}), generate lower-quality answer. Requirements: 1)Information may be inaccurate or incomplete, 2)Expression may be unclear, 3)Possible errors or irrelevant information."
+
+        # Generate baseline data
         baseline_data = []
         generation_calls = 0
-        
+
         for item in target_data:
             question = item['question']
             groundtruth = item['groundtruth']
-            
-            # 生成基线回答
+
+            # Generate baseline answer
             baseline_answer = self._generate_baseline_answer(question, groundtruth, instruction, quality_level)
             generation_calls += 1
-            
-            # 生成基线上下文
+
+            # Generate baseline contexts
             baseline_contexts = self._generate_baseline_contexts(question, groundtruth, quality_level)
-            generation_calls += 3  # 3个上下文
-            
+            generation_calls += 3  # 3 contexts
+
             baseline_data.append({
                 'question': question,
                 'groundtruth': groundtruth,
                 'answer': baseline_answer,
                 'context': baseline_contexts
             })
-        
+
         return baseline_data, generation_calls
     
     def _summarize_tournament_baseline_comparison(self, baseline_results: Dict, target_system: str) -> Dict:
-        """总结锦标赛基线对比结果"""
+        """Summarize tournament baseline comparison results."""
         summary = {
             "target_system": target_system,
             "comparisons": {}
         }
-        
+
         for rank_name, result in baseline_results.items():
             baseline_info = result["baseline_info"]
-            comparison = result["comparison"]
-            
-            # 计算胜率
+            comparison = result
+
+            # Calculate win rate
             total_questions = len(comparison["question_results"])
-            wins = sum(1 for qr in comparison["question_results"] 
+            wins = sum(1 for qr in comparison["question_results"]
                       if qr["passage_judgment"]["win_type"] == "A wins")
-            ties = sum(1 for qr in comparison["question_results"] 
+            ties = sum(1 for qr in comparison["question_results"]
                       if qr["passage_judgment"]["win_type"] == "Tie")
-            
+
             win_rate = wins / total_questions if total_questions > 0 else 0
             tie_rate = ties / total_questions if total_questions > 0 else 0
-            
-            # 判断结论
+
+            # Determine conclusion
             if win_rate > 0.6:
-                conclusion = f"显著优于{rank_name}"
+                conclusion = f"significantly better than {rank_name}"
             elif win_rate > 0.4:
-                conclusion = f"略优于{rank_name}"
+                conclusion = f"slightly better than {rank_name}"
             elif win_rate > 0.2:
-                conclusion = f"与{rank_name}相当"
+                conclusion = f"comparable to {rank_name}"
             else:
-                conclusion = f"不如{rank_name}"
-            
+                conclusion = f"inferior to {rank_name}"
+
             summary["comparisons"][rank_name] = {
                 "baseline_system": baseline_info["system_name"],
                 "baseline_elo": baseline_info["elo_score"],
@@ -1282,64 +1230,64 @@ class SimplifiedDICEEvaluator:
                 "total_questions": total_questions,
                 "conclusion": conclusion
             }
-        
+
         return summary
     
-    def scenario_b_baseline_comparison(self, qacg_file: str, target_system: str = None, 
+    def scenario_b_baseline_comparison(self, qacg_file: str, target_system: str = None,
                                      tournament_report_path: str = None) -> Dict[str, Any]:
         """
-        场景B: 单系统vs锦标赛排名基线
-        
+        Scenario B: Single system vs tournament ranking baselines.
+
         Args:
-            qacg_file: 目标系统的QACG文件
-            target_system: 系统名称（可选）
-            tournament_report_path: 锦标赛报告文件路径（可选）
-            
+            qacg_file: Target system's QACG file
+            target_system: System name (optional)
+            tournament_report_path: Tournament report file path (optional)
+
         Returns:
-            基线对比结果
+            Baseline comparison result
         """
-        self.logger.info("🎯 开始场景B: 单系统vs锦标赛排名基线")
-        
-        # 1. 加载目标系统
+        self.logger.info("Starting Scenario B: Single system vs tournament ranking baselines")
+
+        # 1. Load target system
         target_data = self._load_qacg_file(qacg_file)
         if not target_system:
             target_system = Path(qacg_file).stem.replace("qacg_", "")
-        
-        # 2. 解析锦标赛排名
+
+        # 2. Parse tournament rankings
         tournament_rankings = self._parse_tournament_rankings(tournament_report_path)
-        
-        # 3. 与锦标赛排名基线对比
+
+        # 3. Compare against tournament ranking baselines
         baseline_results = {}
         total_calls = 0
-        
+
         for rank_name, baseline_info in tournament_rankings.items():
-            self.logger.info(f"🔄 {target_system} vs {rank_name} ({baseline_info['system_name']}) 对比")
-            
-            # 构造基线数据
+            self.logger.info(f"Comparing {target_system} vs {rank_name} ({baseline_info['system_name']})")
+
+            # Construct baseline data
             baseline_data, baseline_generation_calls = self._create_tournament_baseline_data(
                 target_data, baseline_info
             )
-            
-            # 执行对比
+
+            # Execute comparison
             comparison_result = self._pairwise_comparison(
-                target_data, baseline_data, 
+                target_data, baseline_data,
                 f"{target_system}", f"{rank_name}_{baseline_info['system_name']}",
                 max_questions=self.config.max_questions
             )
-            
-            # 保存基线数据以供详细对比使用
+
+            # Save baseline data for detailed comparison
             comparison_result["baseline_data"] = baseline_data
             comparison_result["baseline_generation_calls"] = baseline_generation_calls
             comparison_result["baseline_info"] = baseline_info
             baseline_results[rank_name] = comparison_result
             total_calls += len(comparison_result["question_results"]) + baseline_generation_calls
-        
-        # 4. 统计分析
+
+        # 4. Statistical analysis
         comparison_summary = self._summarize_tournament_baseline_comparison(baseline_results, target_system)
-        
-        # 5. 生成详细QACG对比数据
+
+        # 5. Generate detailed QACG comparison data
         detailed_qacg_comparisons = self._generate_detailed_qacg_comparisons(target_data, target_system, baseline_results)
-        
+
         result = {
             "config": self._config_to_dict(),
             "target_system": target_system,
@@ -1349,58 +1297,52 @@ class SimplifiedDICEEvaluator:
             "detailed_qacg_comparisons": detailed_qacg_comparisons,
             "total_llm_calls": total_calls
         }
-        
-        # 保存结果
+
+        # Save results
         self._save_baseline_result(result)
         return result
     
     def _load_systems(self, qacg_files: List[str]) -> Dict[str, List[Dict]]:
-        """加载所有系统数据"""
+        """Load all systems data."""
         systems = {}
         for file_path in qacg_files:
             system_name = Path(file_path).stem.replace("qacg_", "")
             systems[system_name] = self._load_qacg_file(file_path)
         return systems
-    
+
     def _load_qacg_file(self, file_path: str) -> List[Dict]:
-        """加载QACG文件"""
+        """Load QACG file."""
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return data[:self.config.max_questions]  # 限制题目数量
+        return data[:self.config.max_questions]  # Limit to configured number of questions
     
     def _create_groups(self, system_names: List[str]) -> List[List[str]]:
-        """创建分组 (根据系统数量自动分组)"""
-        # 简单按顺序分组，实际可以根据预期实力分组
+        """Create system groups by splitting names."""
         mid = len(system_names) // 2
         return [system_names[:mid], system_names[mid:]]
-    
-    def _group_stage(self, group_systems: List[str], all_systems: Dict[str, List[Dict]], 
-                    stage_name: str = "小组赛") -> Dict[str, Any]:
-        """组内对战"""
-        self.logger.info(f"🔄 {stage_name}: {group_systems}")
-        
-        # 初始化Elo分数
+
+    def _group_stage(self, group_systems: List[str], all_systems: Dict[str, List[Dict]],
+                    stage_name: str = "Group Stage") -> Dict[str, Any]:
+        """Execute within-group pairwise comparisons."""
+        self.logger.info(f"Starting {stage_name} for systems: {group_systems}")
+
         elo_scores = {system: self.config.initial_elo for system in group_systems}
         pairwise_results = []
         total_calls = 0
-        
-        # 所有两两对战
+
         for sys_a, sys_b in itertools.combinations(group_systems, 2):
-            self.logger.info(f"  📊 {sys_a} vs {sys_b}")
-            
-            # 执行对比
+            self.logger.info(f"Comparing {sys_a} vs {sys_b}")
+
             comparison = self._pairwise_comparison(
                 all_systems[sys_a], all_systems[sys_b], sys_a, sys_b
             )
             pairwise_results.append(comparison)
             total_calls += len(comparison["question_results"])
-            
-            # 更新Elo分数
+
             self._update_elo_scores(elo_scores, comparison, sys_a, sys_b)
-        
-        # 排名
+
         ranking = sorted(group_systems, key=lambda x: elo_scores[x], reverse=True)
-        
+
         return {
             "stage": stage_name,
             "systems": group_systems,
@@ -1411,53 +1353,42 @@ class SimplifiedDICEEvaluator:
         }
     
     def _judge_single_question(self, question_data: Tuple[int, Dict, Dict, str]) -> Tuple[int, Dict[str, Any]]:
-        """
-        判决单个问题（用于并发处理）- 使用新的soft win机制
-        
+        """Judge a single question (for concurrent processing) using soft-win mechanism.
+
         Args:
             question_data: (index, qa_a, qa_b, groundtruth)
-            
+
         Returns:
-            (index, question_result): 索引和判决结果
+            (index, question_result): Index and judgment result
         """
         i, qa_a, qa_b, groundtruth = question_data
-        
+
         try:
-            # 只进行passage粒度判决
             question = qa_a["question"]
             expected_answer = qa_a.get("expected_answer", "")
-            
-            # # 打印当前问题的标准答案和正确证据
-            # print(f"\n📋 问题 {i+1}: {question}")
-            # print(f"📝 标准答案: {expected_answer}")
-            # print(f"📄 正确证据: {groundtruth}")
-            # print("-" * 80)
-            
-            # 构建passage粒度对比
+
             passage_judgment = self._judge_passage_only(question, qa_a, qa_b, groundtruth)
-            
-            # 计算soft win得分
+
             score_a, score_b = self._calculate_soft_win_score(passage_judgment)
-            
+
             question_result = {
                 "question": question,
                 "passage_judgment": passage_judgment,
                 "score_a": score_a,
                 "score_b": score_b,
                 "winner": passage_judgment.get("win_type", "Tie"),
-                "index": i  # 保持原始顺序
+                "index": i
             }
-            
+
             return i, question_result
-            
+
         except Exception as e:
-            # 处理异常情况
-            self.logger.error(f"问题 {i+1} 判决失败: {e}")
+            self.logger.error(f"Question {i+1} judgment failed: {e}")
             error_result = {
                 "question": qa_a.get("question", ""),
                 "passage_judgment": {
                     "label": "Tie",
-                    "reason": f"判决失败: {str(e)}",
+                    "reason": f"Judgment failed: {str(e)}",
                     "score": 0.5,
                     "margin_score": 0.0,
                     "granularity": "passage",
@@ -1479,102 +1410,102 @@ class SimplifiedDICEEvaluator:
             }
             return i, error_result
 
-    def _pairwise_comparison(self, data_a: List[Dict], data_b: List[Dict], 
+    def _pairwise_comparison(self, data_a: List[Dict], data_b: List[Dict],
                            name_a: str, name_b: str, max_questions: int = None) -> Dict[str, Any]:
-        """执行成对比较（支持并发处理）"""
+        """Execute pairwise comparison (with concurrent processing support)."""
         if max_questions is None:
             max_questions = self.config.max_questions
-        
+
         total_questions = min(len(data_a), len(data_b), max_questions)
-        
-        self.logger.info(f"🚀 开始并发处理 {total_questions} 个问题...")
-        self.logger.info(f"⚙️ 并发配置: {self.config.max_workers} workers, 批大小: {self.config.batch_size}")
-        
-        # 准备所有问题数据
+
+        self.logger.info(f"Starting concurrent processing of {total_questions} questions...")
+        self.logger.info(f"Concurrency config: {self.config.max_workers} workers, batch size: {self.config.batch_size}")
+
+        # Prepare all question data
         questions_data = []
         for i in range(total_questions):
             qa_a = data_a[i]
             qa_b = data_b[i]
             groundtruth = qa_a.get("groundtruth", qa_a.get("expected_answer", ""))
             questions_data.append((i, qa_a, qa_b, groundtruth))
-        
-        # 并发处理 - 添加问题处理进度条
+
+        # Concurrent processing - add question level progress bar
         question_results = []
         completed_count = 0
-        
-        # 创建问题级进度条
-        question_progress = tqdm(total=total_questions, 
-                               desc=f"📝 {name_a} vs {name_b}", 
-                               unit="题",
+
+        # Create question-level progress bar
+        question_progress = tqdm(total=total_questions,
+                               desc=f"{name_a} vs {name_b}",
+                               unit="question",
                                ncols=100,
                                colour='blue',
                                leave=False)
-        
-        # 分批处理
+
+        # Process in batches
         for batch_start in range(0, len(questions_data), self.config.batch_size):
             batch_end = min(batch_start + self.config.batch_size, len(questions_data))
             batch_data = questions_data[batch_start:batch_end]
-            
-            self.logger.info(f"🔄 处理批次 {batch_start//self.config.batch_size + 1}: 问题 {batch_start+1}-{batch_end}")
-            
-            # 使用ThreadPoolExecutor进行并发处理
+
+            self.logger.info(f"Processing batch {batch_start//self.config.batch_size + 1}: questions {batch_start+1}-{batch_end}")
+
+            # Use ThreadPoolExecutor for concurrent processing
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.config.max_workers, len(batch_data))) as executor:
-                # 提交任务
-                future_to_index = {executor.submit(self._judge_single_question, question_data): question_data[0] 
+                # Submit tasks
+                future_to_index = {executor.submit(self._judge_single_question, question_data): question_data[0]
                                  for question_data in batch_data}
-                
-                # 收集结果
+
+                # Collect results
                 batch_results = []
                 for future in concurrent.futures.as_completed(future_to_index):
                     try:
                         i, result = future.result()
                         batch_results.append((i, result))
                         completed_count += 1
-                        
-                        # 更新进度条
+
+                        # Update progress bar
                         question_progress.update(1)
                         winner = result.get("winner", "Unknown")
-                        question_progress.set_description(f"📝 {name_a} vs {name_b} - 最新: {winner}")
-                        
-                        # 输出详细的判决结果（重要！包含理由等信息）
+                        question_progress.set_description(f"{name_a} vs {name_b} - Latest: {winner}")
+
+                        # Output detailed judgment result (important! includes reasoning)
                         with self._lock:
                             self._log_question_result(result, completed_count, total_questions)
                             
                     except Exception as e:
                         i = future_to_index[future]
-                        self.logger.error(f"问题 {i+1} 处理异常: {e}")
-                
-                # 按原始顺序排序
+                        self.logger.error(f"Question {i+1} processing error: {e}")
+
+                # Sort by original order
                 batch_results.sort(key=lambda x: x[0])
                 question_results.extend([result for _, result in batch_results])
-            
-            # 早停机制已移除 - 按用户要求去除所有收敛/早停机制
-        
-        # 关闭问题进度条
+
+            # Early stopping mechanism removed per user request
+
+        # Close question progress bar
         question_progress.close()
-        
-        self.logger.info(f"✅ 并发处理完成，共处理 {len(question_results)} 个问题")
-        
-        # 汇总结果 - 使用新的累计评分机制
+
+        self.logger.info(f"Concurrent processing complete, {len(question_results)} questions processed")
+
+        # Summarize results - using new cumulative scoring mechanism
         summary = self._summarize_pairwise_result_with_soft_win(question_results, name_a, name_b)
-        
+
         return {
             "system_a": name_a,
             "system_b": name_b,
             "question_results": question_results,
             "summary": summary
         }
-    
+
     def _judge_passage_only(self, question: str, qa_a: Dict, qa_b: Dict, groundtruth: str) -> Dict[str, Any]:
-        """仅进行passage粒度判决（检索-证据双通道）"""
-        # 构建检索-证据双通道prompt
+        """Perform passage-granularity judgment only (retrieval-evidence dual-channel)."""
+        # Build retrieval-evidence dual-channel prompt
         context_a = qa_a.get("context", [])
         context_b = qa_b.get("context", [])
         answer_a = qa_a.get("rag_answer", "")
         answer_b = qa_b.get("rag_answer", "")
         expected_answer = qa_a.get("expected_answer", "")
-        
-        # 简化的passage级判决prompt
+
+        # Simplified passage-level judgment prompt (in Chinese for LLM)
         prompt = f"""作为RAG系统评估专家，请对比两个系统的检索-回答质量。
 
 问题: {question}
@@ -1631,11 +1562,11 @@ class SimplifiedDICEEvaluator:
             prob_t = judge_result.get("prob_t", 0.33)
             
             # 简化日志：只输出关键信息
-            # self.logger.info(f"🔍 从judge_result获取的logits: A={logit_a}, B={logit_b}, T={logit_t}")
-            # self.logger.info(f"🔍 从judge_result获取的概率: A={prob_a:.3f}, B={prob_b:.3f}, T={prob_t:.3f}")
-            # self.logger.info(f"🔍 judge_result所有键: {list(judge_result.keys())}")
+            # self.logger.info(f" 从judge_result获取的logits: A={logit_a}, B={logit_b}, T={logit_t}")
+            # self.logger.info(f" 从judge_result获取的概率: A={prob_a:.3f}, B={prob_b:.3f}, T={prob_t:.3f}")
+            # self.logger.info(f" judge_result所有键: {list(judge_result.keys())}")
             
-            # 🔧 改进理由解析逻辑
+            # Improve reason parsing logic
             reason = "基于LLM判决结果"  # 默认描述
             lines = response.strip().split('\n')
             
@@ -1912,11 +1843,11 @@ class SimplifiedDICEEvaluator:
         soft_wins_b = sum(1 for r in question_results if r["passage_judgment"].get("win_type", "").startswith("B soft"))
         ties = sum(1 for r in question_results if "tie" in r["passage_judgment"].get("win_type", "").lower())
         
-        self.logger.info(f"🏆 累计评分结果:")
-        self.logger.info(f"  📊 总分: {name_a}={total_score_a:.2f}, {name_b}={total_score_b:.2f} (共{total_questions}题)")
+        self.logger.info(f" 累计评分结果:")
+        self.logger.info(f"   总分: {name_a}={total_score_a:.2f}, {name_b}={total_score_b:.2f} (共{total_questions}题)")
         self.logger.info(f"  📈 平均得分率: {name_a}={avg_score_a:.3f}, {name_b}={avg_score_b:.3f}")
-        self.logger.info(f"  🎯 判决统计: A硬胜{hard_wins_a}, A软胜{soft_wins_a}, B硬胜{hard_wins_b}, B软胜{soft_wins_b}, 平局{ties}")
-        self.logger.info(f"  ⚖️ Elo更新: {elo_delta:.1f} ({winner}, 置信度{confidence:.3f})")
+        self.logger.info(f"   判决统计: A硬胜{hard_wins_a}, A软胜{soft_wins_a}, B硬胜{hard_wins_b}, B软胜{soft_wins_b}, 平局{ties}")
+        self.logger.info(f"   Elo更新: {elo_delta:.1f} ({winner}, 置信度{confidence:.3f})")
         
         return {
             "total_score_a": total_score_a,
@@ -1975,26 +1906,24 @@ class SimplifiedDICEEvaluator:
         }
     
     def _create_baseline_data(self, target_data: List[Dict], baseline_name: str) -> Tuple[List[Dict], int]:
-        """创建基线对比数据 - 使用LLM生成真实的QACG对"""
-        self.logger.info(f"生成 {baseline_name} 基线的真实QACG数据...")
+        """Create baseline comparison data using LLM-generated QACG pairs."""
+        self.logger.info(f"Generating baseline data for quality level: {baseline_name}")
         baseline_data = []
         baseline_prompt = self.baseline_prompts[baseline_name]
         llm_calls = 0
-        
+
         for i, qa in enumerate(target_data):
             question = qa["question"]
             groundtruth = qa.get("groundtruth", qa.get("expected_answer", ""))
-            
-            self.logger.info(f"  生成第 {i+1}/{len(target_data)} 个{baseline_name}基线回答")
-            
-            # 生成基线回答
+
+            self.logger.info(f"Generating baseline answer {i+1}/{len(target_data)} for quality: {baseline_name}")
+
             generated_answer = self._generate_baseline_answer(question, groundtruth, baseline_prompt)
             llm_calls += 1
-            
-            # 生成基线检索证据
+
             generated_context = self._generate_baseline_context(question, groundtruth, baseline_prompt)
             llm_calls += 1
-            
+
             baseline_qa = {
                 "question": question,
                 "rag_answer": generated_answer,
@@ -2007,168 +1936,157 @@ class SimplifiedDICEEvaluator:
                 }
             }
             baseline_data.append(baseline_qa)
-        
+
         return baseline_data, llm_calls
-    
+
     def _generate_baseline_answer(self, question: str, groundtruth: str, baseline_prompt: Dict) -> str:
-        """使用LLM生成基线回答"""
+        """Generate baseline answer using LLM."""
         prompt = f"""
 {baseline_prompt["instruction"]}
 
-问题: {question}
-参考标准答案: {groundtruth}
+Question: {question}
+Reference answer: {groundtruth}
 
-请基于上述要求生成一个{baseline_prompt["quality_level"]}质量的回答:
+Generate a {baseline_prompt["quality_level"]} quality response based on the above requirements:
 """
-        
+
         try:
             response = self.pairwise_judge._call_llm(prompt)
             return response.strip()
         except Exception as e:
-            self.logger.error(f"生成基线回答失败: {e}")
-            # 降级到默认回答
+            self.logger.error(f"Failed to generate baseline answer: {e}")
             fallback_answers = {
-                "high": f"基于相关资料，{groundtruth}",
-                "medium": f"根据信息显示，{groundtruth[:len(groundtruth)//2]}...",
-                "low": "信息不够明确，可能需要更多资料。"
+                "high": f"Based on available information, {groundtruth}",
+                "medium": f"According to the information, {groundtruth[:len(groundtruth)//2]}...",
+                "low": "Insufficient information to provide a clear answer."
             }
-            return fallback_answers.get(baseline_prompt["quality_level"], "无法生成回答")
-    
+            return fallback_answers.get(baseline_prompt["quality_level"], "Unable to generate answer")
+
     def _generate_baseline_context(self, question: str, groundtruth: str, baseline_prompt: Dict) -> List[str]:
-        """使用LLM生成基线检索证据"""
+        """Generate baseline retrieval evidence using LLM."""
         prompt = f"""
 {baseline_prompt["context_instruction"]}
 
-问题: {question}
-参考信息: {groundtruth}
+Question: {question}
+Reference information: {groundtruth}
 
-请生成3条符合{baseline_prompt["quality_level"]}质量要求的检索证据，每条证据应该独立成段：
+Generate 3 pieces of evidence that meet the {baseline_prompt["quality_level"]} quality requirements:
 
-证据1：
-证据2：
-证据3：
+Evidence 1:
+Evidence 2:
+Evidence 3:
 """
-        
+
         try:
             response = self.pairwise_judge._call_llm(prompt)
-            # 解析响应，提取3条证据
             lines = response.strip().split('\n')
             contexts = []
             current_context = ""
-            
+
             for line in lines:
                 line = line.strip()
-                if line.startswith("证据") and "：" in line:
+                if line.startswith("Evidence") and ":" in line:
                     if current_context:
                         contexts.append(current_context.strip())
-                    current_context = line.split("：", 1)[1]
-                elif line and not line.startswith("证据"):
+                    current_context = line.split(":", 1)[1]
+                elif line and not line.startswith("Evidence"):
                     current_context += " " + line
-            
+
             if current_context:
                 contexts.append(current_context.strip())
-            
-            # 确保有3条证据
+
             while len(contexts) < 3:
                 fallback_contexts = {
-                    "high": f"这是基于权威资料的高质量证据，详细说明了{question}的相关信息。",
-                    "medium": f"这是关于{question}的基本信息，提供了部分相关内容。",
-                    "low": f"这是与{question}相关的一般性信息，可能不够准确。"
+                    "high": f"High-quality evidence based on authoritative sources regarding {question}.",
+                    "medium": f"Basic information about {question} with partial relevant content.",
+                    "low": f"General information related to {question}, may not be entirely accurate."
                 }
-                contexts.append(fallback_contexts.get(baseline_prompt["quality_level"], "相关信息不足"))
-            
+                contexts.append(fallback_contexts.get(baseline_prompt["quality_level"], "Related information unavailable"))
+
             return contexts[:3]
-            
+
         except Exception as e:
-            self.logger.error(f"生成基线证据失败: {e}")
-            # 降级到默认证据
+            self.logger.error(f"Failed to generate baseline evidence: {e}")
             fallback_contexts = {
                 "high": [
-                    f"权威资料显示，{groundtruth[:50]}...",
-                    f"详细分析表明，{question}涉及多个方面的考量。",
-                    "基于可靠来源的信息，以上内容具有较高准确性。"
+                    f"Authoritative sources indicate, {groundtruth[:50]}...",
+                    f"Detailed analysis shows {question} involves multiple considerations.",
+                    "Based on reliable sources, the above information has high accuracy."
                 ],
                 "medium": [
-                    f"相关信息表明，{groundtruth[:30]}...",
-                    f"关于{question}的基本信息如上所述。",
-                    "这些信息基本准确但可能不够完整。"
+                    f"Related information indicates, {groundtruth[:30]}...",
+                    f"Regarding {question}, basic information is as described above.",
+                    "This information is generally accurate but may be incomplete."
                 ],
                 "low": [
-                    f"据了解，{groundtruth[:20]}...",
-                    f"关于{question}的信息可能不够准确。",
-                    "需要进一步验证相关内容的准确性。"
+                    f"As reported, {groundtruth[:20]}...",
+                    f"Information about {question} may not be entirely accurate.",
+                    "Further verification of relevant content accuracy is recommended."
                 ]
             }
-            return fallback_contexts.get(baseline_prompt["quality_level"], ["信息不足"])
+            return fallback_contexts.get(baseline_prompt["quality_level"], ["Insufficient information"])
     
-    def _summarize_baseline_comparison(self, baseline_results: Dict[str, Any], 
+    def _summarize_baseline_comparison(self, baseline_results: Dict[str, Any],
                                      target_system: str) -> Dict[str, Any]:
-        """汇总基线对比结果"""
+        """Summarize baseline comparison results."""
         summary = {
             "target_system": target_system,
             "comparisons": {}
         }
-        
+
         for baseline_name, result in baseline_results.items():
-            win_rate = result["summary"]["win_rate_a"]  # target系统的胜率
+            win_rate = result["summary"]["win_rate_a"]
             total_questions = result["summary"]["total_questions"]
-            
-            # 统计显著性简化判断
+
             if win_rate > 0.6:
-                conclusion = f"显著优于{baseline_name}基线"
+                conclusion = f"Significantly better than {baseline_name} baseline"
             elif win_rate < 0.4:
-                conclusion = f"显著劣于{baseline_name}基线"
+                conclusion = f"Significantly worse than {baseline_name} baseline"
             else:
-                conclusion = f"与{baseline_name}基线相当"
-            
+                conclusion = f"Comparable to {baseline_name} baseline"
+
             summary["comparisons"][baseline_name] = {
                 "win_rate": win_rate,
                 "total_questions": total_questions,
                 "conclusion": conclusion
             }
-        
+
         return summary
     
     def _generate_detailed_qacg_comparisons(self, target_data: List[Dict], target_system: str, baseline_results: Dict[str, Any]) -> Dict[str, Any]:
-        """生成详细的QACG对比数据 - 重用已生成的基线数据"""
-        self.logger.info("整理详细QACG对比数据...")
-        
+        """Generate detailed QACG comparison data by reusing generated baseline data."""
+        self.logger.info("Organizing detailed QACG comparison data...")
+
         detailed_comparisons = {
             "target_system": target_system,
             "total_questions": len(target_data),
             "qacg_pairs": []
         }
-        
-        # 限制输出数量以避免文件过大
+
         sample_size = min(len(target_data), self.config.max_questions)
-        
-        # 从baseline_results中提取已生成的基线数据
+
         baseline_data_by_name = {}
         for baseline_name, result in baseline_results.items():
             baseline_data_by_name[baseline_name] = result.get("baseline_data", [])
-        
+
         for i, target_qa in enumerate(target_data[:sample_size]):
             question = target_qa["question"]
-            
-            # 构建对比对
+
             qacg_pair = {
                 "question_id": i + 1,
                 "question": question,
                 "groundtruth": target_qa.get("groundtruth", target_qa.get("expected_answer", "")),
-                
-                # 目标系统的QACG
+
                 "target_system": {
                     "name": target_system,
                     "answer": target_qa.get("rag_answer", ""),
                     "context": target_qa.get("context", []),
                     "metadata": target_qa.get("metadata", {})
                 },
-                
-                # 各个基线的QACG
+
                 "baselines": {}
             }
-            
-            # 使用已生成的基线数据
+
             for baseline_name in self.baseline_prompts.keys():
                 if baseline_name in baseline_data_by_name and i < len(baseline_data_by_name[baseline_name]):
                     baseline_qa = baseline_data_by_name[baseline_name][i]
@@ -2182,60 +2100,57 @@ class SimplifiedDICEEvaluator:
                         "metadata": baseline_qa.get("metadata", {})
                     }
                 else:
-                    # 备用基线数据（如果出现数据不匹配）
                     baseline_qacg = {
                         "name": f"Baseline_{baseline_name}",
-                        "answer": f"未能生成{baseline_name}质量的基线回答",
-                        "context": [f"未能生成{baseline_name}质量的基线证据"],
+                        "answer": f"Unable to generate baseline response for {baseline_name} quality",
+                        "context": [f"Unable to generate baseline evidence for {baseline_name} quality"],
                         "quality_level": baseline_name.lower(),
                         "description": self._get_baseline_description(baseline_name),
                         "generation_instruction": self.baseline_prompts[baseline_name]["instruction"],
                         "metadata": {"error": "baseline_generation_failed"}
                     }
-                
+
                 qacg_pair["baselines"][baseline_name] = baseline_qacg
-            
+
             detailed_comparisons["qacg_pairs"].append(qacg_pair)
-        
+
         return detailed_comparisons
     
     def _get_baseline_description(self, baseline_name: str) -> str:
-        """获取基线描述"""
+        """Get baseline quality level description."""
         descriptions = {
-            "Good": "高质量基线：提供详细准确的回答，包含完整关键信息，逻辑清晰",
-            "Medium": "中等质量基线：提供基本正确但不够详细的回答，存在信息缺失", 
-            "Bad": "低质量基线：回答不够准确，存在明显错误或遗漏"
+            "Good": "High-quality baseline: provides detailed and accurate responses with complete key information and clear logic",
+            "Medium": "Medium-quality baseline: provides basically correct responses with some missing details",
+            "Bad": "Low-quality baseline: responses have reduced accuracy with obvious errors or omissions"
         }
-        return descriptions.get(baseline_name, "未知基线")
-    
+        return descriptions.get(baseline_name, "Unknown baseline")
+
     def _analyze_failures(self, pairwise_results: List[Dict]) -> Dict[str, Any]:
-        """分析失败原因（词云数据）"""
+        """Analyze failure reasons and patterns from comparison results."""
         failure_reasons = []
-        
+
         for result in pairwise_results:
             for qr in result["question_results"]:
                 passage_judgment = qr.get("passage_judgment", {})
                 reason = passage_judgment.get("reason", "")
                 if reason:
                     failure_reasons.append(reason)
-        
-        # 简化的词频统计
+
         reason_counts = defaultdict(int)
         for reason in failure_reasons:
-            # 简单的关键词提取
-            keywords = ["准确", "完整", "相关", "证据", "逻辑", "错误", "缺失", "模糊"]
+            keywords = ["accuracy", "completeness", "relevance", "evidence", "logic", "error", "missing", "unclear"]
             for keyword in keywords:
-                if keyword in reason:
+                if keyword in reason.lower():
                     reason_counts[keyword] += 1
-        
+
         return {
             "total_reasons": len(failure_reasons),
             "keyword_counts": dict(reason_counts),
             "top_reasons": sorted(reason_counts.items(), key=lambda x: x[1], reverse=True)[:5]
         }
-    
+
     def _config_to_dict(self) -> Dict[str, Any]:
-        """配置转字典"""
+        """Convert configuration to dictionary format."""
         return {
             "llm_model": self.config.llm_model,
             "max_questions": self.config.max_questions,
@@ -2246,193 +2161,171 @@ class SimplifiedDICEEvaluator:
         }
     
     def _save_tournament_result(self, result: Dict[str, Any]):
-        """保存锦标赛结果"""
+        """Save tournament results to files."""
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(exist_ok=True)
-        
-        # 保存详细结果
+
         with open(output_dir / "tournament_result.json", 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2, default=str)
-        
-        # 保存简要报告
+
         self._save_tournament_report(result, output_dir)
-        
-        self.logger.info(f"🏆 锦标赛结果已保存到: {output_dir}")
-    
+
+        self.logger.info(f"Tournament results saved to: {output_dir}")
+
     def _save_baseline_result(self, result: Dict[str, Any]):
-        """保存基线对比结果"""
+        """Save baseline comparison results to files."""
         output_dir = Path(self.config.output_dir)
         output_dir.mkdir(exist_ok=True)
-        
-        # 保存详细结果
+
         with open(output_dir / "baseline_comparison.json", 'w', encoding='utf-8') as f:
             json.dump(result, f, ensure_ascii=False, indent=2, default=str)
-        
-        # 保存详细的QACG对比数据到单独文件
+
         if "detailed_qacg_comparisons" in result:
             with open(output_dir / "qacg_detailed_comparisons.json", 'w', encoding='utf-8') as f:
                 json.dump(result["detailed_qacg_comparisons"], f, ensure_ascii=False, indent=2, default=str)
-            self.logger.info(f"📋 详细QACG对比数据已保存到: {output_dir / 'qacg_detailed_comparisons.json'}")
-        
-        # 保存简要报告
+            self.logger.info(f"Detailed QACG comparison data saved to: {output_dir / 'qacg_detailed_comparisons.json'}")
+
         self._save_baseline_report(result, output_dir)
-        
-        self.logger.info(f"🎯 基线对比结果已保存到: {output_dir}")
+
+        self.logger.info(f"Baseline comparison results saved to: {output_dir}")
     
     def _save_tournament_report(self, result: Dict[str, Any], output_dir: Path):
-        """保存锦标赛报告（支持瑞士轮和动态Elo配对）"""
+        """Save tournament report  supporting Swiss rounds and dynamic Elo pairing."""
         tournament_type = result.get("tournament_type", "swiss_tournament")
-        
+
         with open(output_dir / "tournament_report.md", 'w', encoding='utf-8') as f:
             if tournament_type == "swiss_tournament":
-                f.write("# DICE精简版锦标赛报告 (瑞士轮系统)\n\n")
+                f.write("# DICE Tournament Report (Swiss System)\n\n")
             elif tournament_type == "full_round_robin":
-                f.write("# DICE精简版锦标赛报告 (完整循环赛)\n\n")
+                f.write("# DICE Tournament Report (Full Round-Robin)\n\n")
             else:
-                f.write("# DICE精简版锦标赛报告 (动态Elo配对系统)\n\n")
-            
-            # 最终排名
-            f.write("## 🏆 最终排名 (动态Elo)\n\n")
+                f.write("# DICE Tournament Report (Dynamic Elo Pairing)\n\n")
+
+            f.write("## Final Rankings (Dynamic Elo)\n\n")
             final_ranking = result["final_ranking"]
             final_elo_scores = result["final_elo_scores"]
-            
+
             for i, system in enumerate(final_ranking, 1):
                 elo_score = final_elo_scores[system]
-                # 前3名标记
-                medal = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else ""
-                f.write(f"{i}. **{system}**: {elo_score:.1f} {medal}\n")
-            
-            # 比赛过程
+                f.write(f"{i}. **{system}**: {elo_score:.1f}\n")
+
             if tournament_type == "swiss_tournament":
-                f.write("\n## 📊 瑞士轮比赛过程\n\n")
+                f.write("\n## Swiss Tournament Progress\n\n")
                 swiss_results = result["swiss_results"]
-                match_records = swiss_results["match_records"]
+                match_records = swiss_results.get("match_records", [])
                 total_rounds = swiss_results.get("total_rounds", 4)
-                
-                f.write(f"总比赛场次: {len(match_records)}场 ({total_rounds}轮，每轮4场)\n\n")
-                
-                # 按轮次显示比赛
-                f.write("### 轮次比赛回顾\n")
+
+                f.write(f"Total matches: {len(match_records)} ({total_rounds} rounds, 4 matches per round)\n\n")
+
+                f.write("### Match Summary by Round\n")
                 current_round = 1
                 for i, match in enumerate(match_records):
                     if match.get('round', 1) != current_round:
                         current_round = match.get('round', 1)
-                        f.write(f"\n#### 第{current_round}轮\n")
-                    
-                    f.write(f"**第{match['match_num']}场**: {match['system_a']} (ELO: {match['old_elo_a']:.1f}) vs {match['system_b']} (ELO: {match['old_elo_b']:.1f})\n")
-                    f.write(f"- 胜者: {match['winner']}\n")
-                    f.write(f"- Elo变化: {match['system_a']} ({match['old_elo_a']:.1f}→{match['new_elo_a']:.1f}), {match['system_b']} ({match['old_elo_b']:.1f}→{match['new_elo_b']:.1f})\n\n")
-                
-                # 瑞士轮系统说明
-                f.write("## 🎯 瑞士轮系统说明\n\n")
-                f.write("- **轮次配对**: 4轮比赛，每轮4场，每队每轮只比一场\n")
-                f.write("- **智能配对**: 每轮选择Elo最接近的未对战过的两队\n")
-                f.write("- **动态调整**: 实时更新Elo分数，反映真实实力变化\n")
-                f.write("- **无种子队**: 初始Elo=1500，完全基于比赛结果学习\n")
-                f.write("- **公平性**: 确保每对系统只对战一次\n\n")
+                        f.write(f"\n#### Round {current_round}\n")
+
+                    f.write(f"**Match {match['match_num']}**: {match['system_a']} (ELO: {match['old_elo_a']:.1f}) vs {match['system_b']} (ELO: {match['old_elo_b']:.1f})\n")
+                    f.write(f"- Winner: {match['winner']}\n")
+                    f.write(f"- Elo change: {match['system_a']} ({match['old_elo_a']:.1f}→{match['new_elo_a']:.1f}), {match['system_b']} ({match['old_elo_b']:.1f}→{match['new_elo_b']:.1f})\n\n")
+
+                f.write("## Swiss System Explanation\n\n")
+                f.write("- **Round pairing**: 4 rounds total, 4 matches per round, each team plays once per round\n")
+                f.write("- **Smart pairing**: Each round selects teams with closest Elo ratings who haven't yet played\n")
+                f.write("- **Dynamic updates**: Elo scores updated in real-time reflecting actual strength changes\n")
+                f.write("- **No seed teams**: Initial Elo = 1500, purely learned from match results\n")
+                f.write("- **Fairness**: Ensures each pair of teams plays exactly once\n\n")
+
             elif tournament_type == "full_round_robin":
-                f.write("\n## 📊 完整循环赛比赛过程\n\n")
+                f.write("\n## Full Round-Robin Tournament Progress\n\n")
                 rr = result["round_robin_results"]
                 match_records = rr.get("match_records", [])
-                f.write(f"总比赛场次: {len(match_records)}场（全对全，每对系统仅一次对战）\n\n")
-                
-                # 按顺序显示比赛
-                f.write("### 比赛回顾\n")
+                f.write(f"Total matches: {len(match_records)} (all vs all, each pair plays once)\n\n")
+
+                f.write("### Match Summary\n")
                 for match in match_records:
-                    f.write(f"**第{match['match_num']}场**: {match['system_a']} (ELO: {match['old_elo_a']:.1f}) vs {match['system_b']} (ELO: {match['old_elo_b']:.1f})\n")
-                    f.write(f"- 胜者: {match['winner']}\n")
-                    f.write(f"- Elo变化: {match['system_a']} ({match['old_elo_a']:.1f}→{match['new_elo_a']:.1f}), {match['system_b']} ({match['old_elo_b']:.1f}→{match['new_elo_b']:.1f})\n\n")
-                
-                # 循环赛说明
-                f.write("## 🎯 完整循环赛说明\n\n")
-                f.write("- **配对方式**: 所有系统两两对战一次（共N(N-1)/2场）\n")
-                f.write("- **评分方式**: 使用soft win累计评分与动态Elo更新\n")
-                f.write("- **可比性**: 覆盖全部配对，避免抽样不完整的偏差\n\n")
+                    f.write(f"**Match {match['match_num']}**: {match['system_a']} (ELO: {match['old_elo_a']:.1f}) vs {match['system_b']} (ELO: {match['old_elo_b']:.1f})\n")
+                    f.write(f"- Winner: {match['winner']}\n")
+                    f.write(f"- Elo change: {match['system_a']} ({match['old_elo_a']:.1f}→{match['new_elo_a']:.1f}), {match['system_b']} ({match['old_elo_b']:.1f}→{match['new_elo_b']:.1f})\n\n")
+
+                f.write("## Full Round-Robin Explanation\n\n")
+                f.write("- **Pairing method**: All teams compete against each other exactly once (total: N(N-1)/2 matches)\n")
+                f.write("- **Scoring method**: Cumulative soft-win scoring with dynamic Elo updates\n")
+                f.write("- **Coverage**: Complete pairing coverage avoids incomplete sampling bias\n\n")
             else:
-                f.write("\n## 📊 动态配对过程\n\n")
-                # 安全获取dynamic_results
+                f.write("\n## Dynamic Pairing Progress\n\n")
                 dynamic_results = result.get("dynamic_results")
                 if dynamic_results:
                     match_records = dynamic_results.get("match_records", [])
-            f.write(f"总比赛场次: {len(match_records)}场\n\n")
-            
-            # 显示关键比赛
-            f.write("### 关键比赛回顾\n")
-            for i, match in enumerate(match_records):  # 显示前10场关键比赛
-                f.write(f"**第{match['match_num']}场**: {match['system_a']} (ELO: {match['old_elo_a']:.1f}) vs {match['system_b']} (ELO: {match['old_elo_b']:.1f})\n")
-                f.write(f"- 胜者: {match['winner']}\n")
-                f.write(f"- Elo变化: {match['system_a']} ({match['old_elo_a']:.1f}→{match['new_elo_a']:.1f}), {match['system_b']} ({match['old_elo_b']:.1f}→{match['new_elo_b']:.1f})\n\n")
-            else:
-                f.write("总比赛场次: 未知\n\n")
-                f.write("### 关键比赛回顾\n")
-                f.write("比赛记录不可用\n\n")
-            
-            # 动态Elo系统说明
-            f.write("## 🎯 动态Elo配对系统说明\n\n")
-            f.write("- **智能配对**: 每轮选择Elo最接近的未对战过的两队\n")
-            f.write("- **动态调整**: 实时更新Elo分数，反映真实实力变化\n")
-            f.write("- **高效性**: 最大化信息增益，减少冗余比赛\n")
-            f.write("- **无种子队**: 初始Elo=1500，完全基于比赛结果学习\n")
-            f.write("- **收敛判断**: 当排名稳定或达到最大场次时结束\n\n")
-            
-            # 失败分析 - 使用动态聚类结果
-            f.write("## 📊 动态失败模式聚类分析\n\n")
-            failure_clusters = result["failure_analysis"]
+                else:
+                    match_records = []
+
+                f.write(f"Total matches: {len(match_records)}\n\n")
+
+                f.write("### Key Matches\n")
+                for i, match in enumerate(match_records):
+                    f.write(f"**Match {match['match_num']}**: {match['system_a']} (ELO: {match['old_elo_a']:.1f}) vs {match['system_b']} (ELO: {match['old_elo_b']:.1f})\n")
+                    f.write(f"- Winner: {match['winner']}\n")
+                    f.write(f"- Elo change: {match['system_a']} ({match['old_elo_a']:.1f}→{match['new_elo_a']:.1f}), {match['system_b']} ({match['old_elo_b']:.1f}→{match['new_elo_b']:.1f})\n\n")
+
+                f.write("## Dynamic Elo Pairing System Explanation\n\n")
+                f.write("- **Smart pairing**: Each round selects teams with closest Elo ratings who haven't yet played\n")
+                f.write("- **Dynamic updates**: Elo scores updated in real-time reflecting actual strength changes\n")
+                f.write("- **Efficiency**: Information gain maximized, redundant matches minimized\n")
+                f.write("- **No seed teams**: Initial Elo = 1500, purely learned from match results\n")
+                f.write("- **Convergence**: Ends when rankings stabilize or max matches reached\n\n")
+
+            f.write("## Dynamic Failure Pattern Clustering Analysis\n\n")
+            failure_clusters = result.get("failure_analysis", {})
             for cluster_id, cluster_data in failure_clusters.items():
                 f.write(f"### {cluster_data['label']}\n")
-                f.write(f"- 相关系统: {', '.join(cluster_data['systems'][:5])}{'...' if len(cluster_data['systems']) > 5 else ''}\n")
-                f.write(f"- 失败案例数: {cluster_data['size']}\n")
-                
-                # 显示动态提取的关键词
+                f.write(f"- Related systems: {', '.join(cluster_data['systems'][:5])}{'...' if len(cluster_data['systems']) > 5 else ''}\n")
+                f.write(f"- Failure case count: {cluster_data['size']}\n")
+
                 top_keywords = cluster_data.get('top_keywords', [])
                 if top_keywords:
-                    keyword_str = ', '.join([f'{k}({v}次)' for k, v in top_keywords[:3]])
-                    f.write(f"- 关键词: {keyword_str}\n")
+                    keyword_str = ', '.join([f'{k}({v} times)' for k, v in top_keywords[:3]])
+                    f.write(f"- Keywords: {keyword_str}\n")
                 f.write("\n")
-            
-            # 调用量统计
-            total_calls = result["total_llm_calls"]
-            total_matches = len(match_records)
-            f.write(f"## 📈 性能统计\n\n")
-            f.write(f"- 总比赛场次: {total_matches}场 (vs 传统联赛28场，减少{(28-total_matches)/28*100:.1f}%)\n")
-            f.write(f"- 总LLM调用次数: {total_calls}\n")
-            f.write(f"- 估计用时: ~{total_calls/40:.1f}分钟 (8×A100)\n")
-            f.write(f"- 每队平均对战: {total_matches*2/8:.1f}场\n")
 
-            # CI分析
+            total_calls = result.get("total_llm_calls", 0)
+            total_matches = len(match_records) if match_records else 0
+            f.write(f"## Performance Statistics\n\n")
+            f.write(f"- Total matches: {total_matches} (vs traditional 28, reduced by {(28-total_matches)/28*100:.1f}%)\n")
+            f.write(f"- Total LLM calls: {total_calls}\n")
+            f.write(f"- Estimated time: ~{total_calls/40:.1f} minutes (8×A100)\n")
+            f.write(f"- Average matches per team: {total_matches*2/8:.1f}\n")
+
             ci_analysis = result.get("ci_analysis", {})
             if ci_analysis:
-                f.write(f"\n## 📊 95% 置信区间分析\n\n")
-                f.write(f"- 平均得分差值: {ci_analysis.get('mean_score_diff', 0):.2f}\n")
+                f.write(f"\n## 95% Confidence Interval Analysis\n\n")
+                f.write(f"- Mean score difference: {ci_analysis.get('mean_score_diff', 0):.2f}\n")
                 f.write(f"- 95% CI: {ci_analysis.get('ci_95', 'N/A')}\n")
-                f.write(f"- 统计显著性: {ci_analysis.get('significance', 'N/A')}\n")
+                f.write(f"- Statistical significance: {ci_analysis.get('significance', 'N/A')}\n")
     
     def _save_baseline_report(self, result: Dict[str, Any], output_dir: Path):
-        """保存基线对比报告"""
+        """Save baseline comparison report."""
         with open(output_dir / "baseline_report.md", 'w', encoding='utf-8') as f:
-            f.write("# DICE精简版基线对比报告\n\n")
-            
+            f.write("# DICE Baseline Comparison Report\n\n")
+
             target_system = result["target_system"]
-            f.write(f"## 🎯 目标系统: {target_system}\n\n")
-            
-            # 对比结果
-            f.write("## 📊 基线对比结果\n\n")
+            f.write(f"## Target System: {target_system}\n\n")
+
+            f.write("## Baseline Comparison Results\n\n")
             summary = result["summary"]
-            
+
             for baseline_name, comparison in summary["comparisons"].items():
                 win_rate = comparison["win_rate"]
                 conclusion = comparison["conclusion"]
-                f.write(f"### vs {baseline_name} 基线\n")
-                f.write(f"- 胜率: {win_rate:.1%}\n")
-                f.write(f"- 结论: {conclusion}\n\n")
-            
-            # 性能统计
+                f.write(f"### vs {baseline_name} Baseline\n")
+                f.write(f"- Win rate: {win_rate:.1%}\n")
+                f.write(f"- Conclusion: {conclusion}\n\n")
+
             total_calls = result["total_llm_calls"]
-            f.write(f"## 📈 性能统计\n\n")
-            f.write(f"- 总LLM调用次数: {total_calls}\n")
-            f.write(f"- 估计用时: ~{total_calls/40:.1f}分钟\n")
+            f.write(f"## Performance Statistics\n\n")
+            f.write(f"- Total LLM calls: {total_calls}\n")
+            f.write(f"- Estimated time: ~{total_calls/40:.1f} minutes\n")
 
 
 def create_simplified_evaluator(config: SimplifiedDICEConfig = None) -> SimplifiedDICEEvaluator:
-    """创建精简版DICE评估器"""
+    """Create a simplified DICE evaluator instance."""
     return SimplifiedDICEEvaluator(config) 
