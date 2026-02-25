@@ -1427,102 +1427,102 @@ class SimplifiedDICEEvaluator:
             }
             return i, error_result
 
-    def _pairwise_comparison(self, data_a: List[Dict], data_b: List[Dict], 
+    def _pairwise_comparison(self, data_a: List[Dict], data_b: List[Dict],
                            name_a: str, name_b: str, max_questions: int = None) -> Dict[str, Any]:
-        """执行成对比较（支持并发处理）"""
+        """Execute pairwise comparison (with concurrent processing support)."""
         if max_questions is None:
             max_questions = self.config.max_questions
-        
+
         total_questions = min(len(data_a), len(data_b), max_questions)
-        
-        self.logger.info(f"🚀 开始并发处理 {total_questions} 个问题...")
-        self.logger.info(f"⚙️ 并发配置: {self.config.max_workers} workers, 批大小: {self.config.batch_size}")
-        
-        # 准备所有问题数据
+
+        self.logger.info(f"Starting concurrent processing of {total_questions} questions...")
+        self.logger.info(f"Concurrency config: {self.config.max_workers} workers, batch size: {self.config.batch_size}")
+
+        # Prepare all question data
         questions_data = []
         for i in range(total_questions):
             qa_a = data_a[i]
             qa_b = data_b[i]
             groundtruth = qa_a.get("groundtruth", qa_a.get("expected_answer", ""))
             questions_data.append((i, qa_a, qa_b, groundtruth))
-        
-        # 并发处理 - 添加问题处理进度条
+
+        # Concurrent processing - add question level progress bar
         question_results = []
         completed_count = 0
-        
-        # 创建问题级进度条
-        question_progress = tqdm(total=total_questions, 
-                               desc=f"📝 {name_a} vs {name_b}", 
-                               unit="题",
+
+        # Create question-level progress bar
+        question_progress = tqdm(total=total_questions,
+                               desc=f"{name_a} vs {name_b}",
+                               unit="question",
                                ncols=100,
                                colour='blue',
                                leave=False)
-        
-        # 分批处理
+
+        # Process in batches
         for batch_start in range(0, len(questions_data), self.config.batch_size):
             batch_end = min(batch_start + self.config.batch_size, len(questions_data))
             batch_data = questions_data[batch_start:batch_end]
-            
-            self.logger.info(f"🔄 处理批次 {batch_start//self.config.batch_size + 1}: 问题 {batch_start+1}-{batch_end}")
-            
-            # 使用ThreadPoolExecutor进行并发处理
+
+            self.logger.info(f"Processing batch {batch_start//self.config.batch_size + 1}: questions {batch_start+1}-{batch_end}")
+
+            # Use ThreadPoolExecutor for concurrent processing
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(self.config.max_workers, len(batch_data))) as executor:
-                # 提交任务
-                future_to_index = {executor.submit(self._judge_single_question, question_data): question_data[0] 
+                # Submit tasks
+                future_to_index = {executor.submit(self._judge_single_question, question_data): question_data[0]
                                  for question_data in batch_data}
-                
-                # 收集结果
+
+                # Collect results
                 batch_results = []
                 for future in concurrent.futures.as_completed(future_to_index):
                     try:
                         i, result = future.result()
                         batch_results.append((i, result))
                         completed_count += 1
-                        
-                        # 更新进度条
+
+                        # Update progress bar
                         question_progress.update(1)
                         winner = result.get("winner", "Unknown")
-                        question_progress.set_description(f"📝 {name_a} vs {name_b} - 最新: {winner}")
-                        
-                        # 输出详细的判决结果（重要！包含理由等信息）
+                        question_progress.set_description(f"{name_a} vs {name_b} - Latest: {winner}")
+
+                        # Output detailed judgment result (important! includes reasoning)
                         with self._lock:
                             self._log_question_result(result, completed_count, total_questions)
                             
                     except Exception as e:
                         i = future_to_index[future]
-                        self.logger.error(f"问题 {i+1} 处理异常: {e}")
-                
-                # 按原始顺序排序
+                        self.logger.error(f"Question {i+1} processing error: {e}")
+
+                # Sort by original order
                 batch_results.sort(key=lambda x: x[0])
                 question_results.extend([result for _, result in batch_results])
-            
-            # 早停机制已移除 - 按用户要求去除所有收敛/早停机制
-        
-        # 关闭问题进度条
+
+            # Early stopping mechanism removed per user request
+
+        # Close question progress bar
         question_progress.close()
-        
-        self.logger.info(f"✅ 并发处理完成，共处理 {len(question_results)} 个问题")
-        
-        # 汇总结果 - 使用新的累计评分机制
+
+        self.logger.info(f"Concurrent processing complete, {len(question_results)} questions processed")
+
+        # Summarize results - using new cumulative scoring mechanism
         summary = self._summarize_pairwise_result_with_soft_win(question_results, name_a, name_b)
-        
+
         return {
             "system_a": name_a,
             "system_b": name_b,
             "question_results": question_results,
             "summary": summary
         }
-    
+
     def _judge_passage_only(self, question: str, qa_a: Dict, qa_b: Dict, groundtruth: str) -> Dict[str, Any]:
-        """仅进行passage粒度判决（检索-证据双通道）"""
-        # 构建检索-证据双通道prompt
+        """Perform passage-granularity judgment only (retrieval-evidence dual-channel)."""
+        # Build retrieval-evidence dual-channel prompt
         context_a = qa_a.get("context", [])
         context_b = qa_b.get("context", [])
         answer_a = qa_a.get("rag_answer", "")
         answer_b = qa_b.get("rag_answer", "")
         expected_answer = qa_a.get("expected_answer", "")
-        
-        # 简化的passage级判决prompt
+
+        # Simplified passage-level judgment prompt (in Chinese for LLM)
         prompt = f"""作为RAG系统评估专家，请对比两个系统的检索-回答质量。
 
 问题: {question}
