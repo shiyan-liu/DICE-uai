@@ -1,12 +1,10 @@
 # DICE
 
-![DICE Poster](docs/dice_poster.png)
-
-<!-- ![DICE Framework](docs/dice_framework.png) -->
+![](docs/dice_framework.png)
 
 Code for evaluating RAG systems with interpretable reasoning and probabilistic scoring.
 
-This repository implements **DICE** (Discrete Interpretable Comparative Evaluation), a framework introduced in [ResponsibleFM @ NeurIPS 2025](https://openreview.net/forum?id=RNz4AfOfh3) for responsible, explainable, and confidence-aware RAG evaluation.
+This repository implements **DICE** (Discrete Interpretable Comparative Evaluation), a framework for responsible, explainable, and confidence-aware RAG evaluation.
 
 ## Features
 
@@ -19,7 +17,7 @@ This repository implements **DICE** (Discrete Interpretable Comparative Evaluati
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/shiyan-liu/DICE.git
+   git clone xxx
    cd DICE
    ```
 2. Install dependencies:
@@ -89,16 +87,4 @@ To run standard RAGAS metrics alongside DICE:
 
 ```bash
 python src/scripts/run_ragas.py --input_dir my_systems/ --output_dir ragas_results
-```
-
-## Reference
-
-If you use DICE in your work, please cite:
-
-```bibtex
-@inproceedings{liu2025dice,
-  title={DICE: Discrete Interpretable Comparative Evaluation with Probabilistic Scoring for Retrieval-Augmented Generation},
-  author={Liu, Shiyan and Ma, Jian and Qu, Rui},
-  booktitle={Socially Responsible and Trustworthy Foundation Models at NeurIPS 2025}
-}
 ```
